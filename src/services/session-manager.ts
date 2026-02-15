@@ -143,6 +143,14 @@ export class SessionManager {
     return entry.key;
   }
 
+  /** True when at least one unexpired password or key is cached. */
+  hasEntries(): boolean {
+    for (const [, entry] of this.entries) {
+      if (!this.isExpired(entry)) return true;
+    }
+    return false;
+  }
+
   /** Clear the session entry for a specific file. */
   clearFile(filePath: string): void {
     const entry = this.entries.get(filePath);

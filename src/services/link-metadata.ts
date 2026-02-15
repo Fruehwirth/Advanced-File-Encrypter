@@ -15,6 +15,7 @@
  * covers the view content.
  */
 
+import { TFile } from "obsidian";
 import type AFEPlugin from "../main";
 
 /** Persisted metadata for one encrypted file. */
@@ -59,7 +60,10 @@ export class LinkMetadataService {
   async save(): Promise<void> {
     if (!this.dirty) return;
     const data = (await this.plugin.loadData()) ?? {};
-    data.linkMetadata = this.store;
+    const s = this.plugin.settings;
+    // Only persist to disk when at least one caching setting is enabled.
+    // When both are off, clear any previously stored data.
+    data.linkMetadata = (s.persistLinks || s.exposeProperties) ? this.store : {};
     await this.plugin.saveData(data);
     this.dirty = false;
   }
@@ -69,8 +73,9 @@ export class LinkMetadataService {
    * Call this after successful decryption and on every save.
    */
   update(filePath: string, plaintext: string): void {
-    if (!this.plugin.settings.persistLinkMetadata) return;
-
+    // Always extract metadata — needed for runtime link resolution even
+    // when persistence settings are off. Whether data is written to disk
+    // is controlled by save().
     const links: string[] = [];
     const embeds: string[] = [];
     const tags: string[] = [];
@@ -130,26 +135,25 @@ export class LinkMetadataService {
     const meta = this.store[filePath];
     if (!meta) return "";
 
+    const settings = this.plugin.settings;
     const parts: string[] = [];
 
-    // Frontmatter
-    if (meta.frontmatter) {
+    // Frontmatter (only if exposeProperties is enabled)
+    if (settings.exposeProperties && meta.frontmatter) {
       parts.push(meta.frontmatter);
     }
 
-    // Links (rendered as a hidden comment-like block)
-    for (const link of meta.links) {
-      parts.push(`[[${link}]]`);
-    }
-
-    // Embeds
-    for (const embed of meta.embeds) {
-      parts.push(`![[${embed}]]`);
-    }
-
-    // Tags
-    for (const tag of meta.tags) {
-      parts.push(`#${tag}`);
+    // Links, embeds, tags (only if persistLinks is enabled)
+    if (settings.persistLinks) {
+      for (const link of meta.links) {
+        parts.push(`[[${link}]]`);
+      }
+      for (const embed of meta.embeds) {
+        parts.push(`![[${embed}]]`);
+      }
+      for (const tag of meta.tags) {
+        parts.push(`#${tag}`);
+      }
     }
 
     return parts.join("\n");
@@ -175,6 +179,121 @@ export class LinkMetadataService {
       this.store[newPath] = meta;
       this.dirty = true;
     }
+  }
+
+  // ── Obsidian metadataCache injection ─────────────────────────────
+  //
+  // Obsidian's metadataCache only indexes .md files. Since .locked files
+  // contain encrypted JSON on disk, the cache sees no links/tags. We
+  // directly inject our extracted metadata into the internal cache so
+  // that graph, backlinks, and outgoing links work for encrypted notes.
+
+  /**
+   * Inject metadata for a single file into Obsidian's metadataCache.
+   * Call after setting view data (skeleton or plaintext).
+   */
+  inject(filePath: string): void {
+    if (this._injectOne(filePath)) {
+      (this.plugin.app.metadataCache as any).trigger("resolved");
+    }
+  }
+
+  /**
+   * Inject metadata for ALL stored files into Obsidian's metadataCache.
+   * Call once after workspace layout is ready so that graph/backlinks
+   * work for locked files that aren't currently open.
+   */
+  injectAll(): void {
+    let injected = false;
+    for (const filePath of Object.keys(this.store)) {
+      if (this._injectOne(filePath)) injected = true;
+    }
+    if (injected) {
+      (this.plugin.app.metadataCache as any).trigger("resolved");
+    }
+  }
+
+  /**
+   * Internal: inject metadata for a single file. Returns true if
+   * something was injected.
+   */
+  private _injectOne(filePath: string): boolean {
+    const meta = this.store[filePath];
+    if (!meta) return false;
+    if (!meta.links.length && !meta.embeds.length && !meta.tags.length) return false;
+
+    const app = this.plugin.app;
+    const mc = app.metadataCache as any;
+
+    // Build a CachedMetadata-compatible object
+    const dummyPos = { start: { line: 0, col: 0, offset: 0 }, end: { line: 0, col: 0, offset: 0 } };
+    const cache: any = {};
+
+    if (meta.links.length) {
+      cache.links = meta.links.map((raw) => {
+        const pipeIdx = raw.indexOf("|");
+        return {
+          link: pipeIdx >= 0 ? raw.substring(0, pipeIdx) : raw,
+          original: `[[${raw}]]`,
+          displayText: pipeIdx >= 0 ? raw.substring(pipeIdx + 1) : raw,
+          position: dummyPos,
+        };
+      });
+    }
+
+    if (meta.embeds.length) {
+      cache.embeds = meta.embeds.map((raw) => ({
+        link: raw,
+        original: `![[${raw}]]`,
+        displayText: raw,
+        position: dummyPos,
+      }));
+    }
+
+    if (meta.tags.length) {
+      cache.tags = meta.tags.map((tag) => ({
+        tag: "#" + tag,
+        position: dummyPos,
+      }));
+    }
+
+    // Inject CachedMetadata into the internal store.
+    // The property name varies across Obsidian versions.
+    const internalCache = mc.metadataCache ?? mc.cache;
+    if (internalCache && typeof internalCache === "object") {
+      internalCache[filePath] = cache;
+    }
+
+    // Resolve links: map each link target to existing vault files
+    const resolved: Record<string, number> = {};
+    const unresolved: Record<string, number> = {};
+
+    for (const raw of [...meta.links, ...meta.embeds]) {
+      const pipeIdx = raw.indexOf("|");
+      let linkPath = pipeIdx >= 0 ? raw.substring(0, pipeIdx) : raw;
+      // Strip heading/block references for resolution
+      const hashIdx = linkPath.indexOf("#");
+      if (hashIdx >= 0) linkPath = linkPath.substring(0, hashIdx);
+      if (!linkPath) continue; // Same-file reference like #heading
+
+      const targetFile = app.metadataCache.getFirstLinkpathDest(linkPath, filePath);
+      if (targetFile) {
+        resolved[targetFile.path] = (resolved[targetFile.path] || 0) + 1;
+      } else {
+        unresolved[linkPath] = (unresolved[linkPath] || 0) + 1;
+      }
+    }
+
+    mc.resolvedLinks[filePath] = resolved;
+    mc.unresolvedLinks[filePath] = unresolved;
+
+    // Notify per-file so backlinks pane updates
+    const file = app.vault.getAbstractFileByPath(filePath);
+    if (file instanceof TFile) {
+      mc.trigger("changed", file, "", cache);
+    }
+
+    return true;
   }
 
   /** Clean up entries for files that no longer exist. */

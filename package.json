@@ -1,6 +1,6 @@
 {
   "name": "advanced-file-encryption",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Transparent whole-note encryption for Obsidian",
   "main": "main.js",
   "scripts": {

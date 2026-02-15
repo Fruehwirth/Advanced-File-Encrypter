@@ -223,6 +223,17 @@
   margin-top: 0.25em;
 }
 
+/* Button row for change-password card (two buttons side by side) */
+.afe-change-pw-buttons {
+  display: flex;
+  gap: 0.5em;
+  margin-top: 0.25em;
+}
+
+.afe-change-pw-buttons .afe-unlock-btn {
+  flex: 1;
+}
+
 /* ── Settings ───────────────────────────────────────────────────── */
 
 .afe-mode-description {

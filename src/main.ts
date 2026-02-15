@@ -16,7 +16,6 @@
 import { Plugin, MarkdownView, TFile } from "obsidian";
 import { AFESettings, DEFAULT_SETTINGS } from "./types";
 import { SessionManager } from "./services/session-manager";
-import { LinkMetadataService } from "./services/link-metadata";
 import {
   VIEW_TYPE_ENCRYPTED,
   EncryptedMarkdownView,
@@ -28,7 +27,6 @@ import { LOCKED_EXTENSION } from "./services/file-data";
 export default class AFEPlugin extends Plugin {
   settings!: AFESettings;
   sessionManager!: SessionManager;
-  linkMetadata!: LinkMetadataService;
   private wholeNoteFeature!: WholeNoteFeature;
 
   /**
@@ -84,7 +82,7 @@ export default class AFEPlugin extends Plugin {
       })
     );
 
-    // On layout ready: recover orphaned tabs and fix misrouted views.
+    // On layout ready: recover orphaned tabs, fix misrouted views.
     this.app.workspace.onLayoutReady(() => {
       this.app.workspace.iterateAllLeaves((leaf) => {
         const viewState = leaf.getViewState();

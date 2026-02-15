@@ -10,7 +10,6 @@
 import { TFile, Notice, WorkspaceLeaf } from "obsidian";
 import type AFEPlugin from "../../main";
 import { encode, decode, LOCKED_EXTENSION, createPendingFile } from "../../services/file-data";
-import { PasswordModal } from "../../ui/password-modal";
 
 export class NoteConverter {
   private plugin: AFEPlugin;
@@ -100,22 +99,12 @@ export class NoteConverter {
       return;
     }
 
-    // Try session password first
-    let password = this.plugin.sessionManager.getPassword(file.path);
+    // Require session password — user must unlock the note first
+    const password = this.plugin.sessionManager.getPassword(file.path);
 
     if (!password) {
-      // Read file to get hint
-      const raw = await this.plugin.app.vault.read(file);
-      let hint = "";
-      try {
-        const { parse } = await import("../../services/file-data");
-        const fileData = parse(raw);
-        hint = fileData.hint ?? "";
-      } catch { /* ignore */ }
-
-      const result = await PasswordModal.prompt(this.plugin.app, "decrypt", hint, false, false, this.plugin.settings.showCleartextPassword);
-      if (!result) return;
-      password = result.password;
+      new Notice("Unlock the note first, then decrypt.");
+      return;
     }
 
     this.isConverting = true;
@@ -142,8 +131,9 @@ export class NoteConverter {
       // Create decrypted file
       const newFile = await this.plugin.app.vault.create(newPath, plaintext);
 
-      // Clean up session entry
-      this.plugin.sessionManager.clearFile(file.path);
+      // Don't clear the session password here — it should persist so the
+      // user can re-encrypt without being prompted again. The session is
+      // only cleared via "Lock all" or "Clear session cache".
 
       // Preserve position in manual-sorting plugin
       await this.updateManualSortOrder(file.path, newPath);

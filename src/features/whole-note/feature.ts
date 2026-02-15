@@ -10,7 +10,7 @@
  * - Auto-encrypting new daily notes
  */
 
-import { TFile, TFolder, Notice, Menu, WorkspaceLeaf, MarkdownView } from "obsidian";
+import { TFile, TFolder, Notice, Menu, WorkspaceLeaf, MarkdownView, setIcon } from "obsidian";
 import type { IAFEFeature } from "../feature-interface";
 import type AFEPlugin from "../../main";
 import { NoteConverter } from "./note-converter";
@@ -23,6 +23,7 @@ import {
 export class WholeNoteFeature implements IAFEFeature {
   private plugin!: AFEPlugin;
   private converter!: NoteConverter;
+  private ribbonIconEl: HTMLElement | null = null;
   private originalGetLeavesOfType: ((type: string) => WorkspaceLeaf[]) | null = null;
 
   async onload(plugin: AFEPlugin): Promise<void> {
@@ -59,6 +60,7 @@ export class WholeNoteFeature implements IAFEFeature {
       name: "Clear session cache",
       callback: () => {
         plugin.sessionManager.clear();
+        this.updateRibbonIcon();
         new Notice("Advanced File Encryption: Session cache cleared.");
       },
     });
@@ -87,8 +89,8 @@ export class WholeNoteFeature implements IAFEFeature {
 
     // --- Ribbon icon ---
 
-    plugin.addRibbonIcon("book-lock", "Lock all encrypted notes", () => {
-      this.lockAll();
+    this.ribbonIconEl = plugin.addRibbonIcon("lock-keyhole", "Set session password", () => {
+      this.ribbonAction();
     });
 
     // --- File menu (right-click) ---
@@ -128,33 +130,37 @@ export class WholeNoteFeature implements IAFEFeature {
 
     plugin.registerEvent(
       plugin.app.workspace.on("active-leaf-change", (leaf) => {
+        // Update ribbon icon to reflect session state
+        this.updateRibbonIcon();
+
         if (!leaf) return;
         const view = leaf.view;
+        if (!(view instanceof MarkdownView)) return;
 
-        // .md files: add "Lock" icon to encrypt
-        if (
-          view instanceof MarkdownView &&
-          !(view instanceof EncryptedMarkdownView) &&
-          view.file?.extension === "md"
-        ) {
-          const actions = (view as any).actionsEl as HTMLElement | undefined;
-          if (actions && !actions.querySelector(".afe-encrypt-action")) {
-            const action = view.addAction("lock", "Encrypt note", () => {
-              if (view.file) this.converter.toEncrypted(view.file);
-            });
-            action.addClass("afe-encrypt-action");
-          }
-        }
+        const actions = (view as any).actionsEl as HTMLElement | undefined;
+        if (!actions) return;
 
-        // .locked files: add "Unlock" icon to decrypt
-        if (view instanceof EncryptedMarkdownView) {
-          const actions = (view as any).actionsEl as HTMLElement | undefined;
-          if (actions && !actions.querySelector(".afe-decrypt-action")) {
-            const action = view.addAction("unlock", "Decrypt note", () => {
-              if (view.file) this.converter.toDecrypted(view.file);
-            });
-            action.addClass("afe-decrypt-action");
-          }
+        // Remove stale AFE action buttons — the file may have changed
+        actions.querySelector(".afe-encrypt-action")?.remove();
+        actions.querySelector(".afe-decrypt-action")?.remove();
+
+        const file = view.file;
+        if (!file) return;
+
+        if (file.extension === "md") {
+          // .md file → show lock icon to encrypt
+          const action = view.addAction("lock", "Encrypt note", () => {
+            if (view.file) this.converter.toEncrypted(view.file);
+          });
+          action.addClass("afe-encrypt-action");
+          this.positionAfterBookmark(actions, action);
+        } else if (file.extension === "locked") {
+          // .locked file → show unlock icon to decrypt
+          const action = view.addAction("unlock", "Decrypt note", () => {
+            if (view.file) this.converter.toDecrypted(view.file);
+          });
+          action.addClass("afe-decrypt-action");
+          this.positionAfterBookmark(actions, action);
         }
       })
     );
@@ -241,11 +247,40 @@ export class WholeNoteFeature implements IAFEFeature {
     await leaf.openFile(file, { state: { mode: "source" } });
   }
 
+  /**
+   * Ribbon button toggle:
+   * - No session → prompt for password → store as session password
+   * - Has session → lock all encrypted notes + clear session
+   */
+  private async ribbonAction(): Promise<void> {
+    if (this.plugin.sessionManager.hasEntries()) {
+      // Session active → lock all
+      this.lockAll();
+    } else {
+      // No session → prompt for password
+      const result = await PasswordModal.prompt(
+        this.plugin.app,
+        "encrypt",
+        "",
+        this.plugin.settings.confirmPassword,
+        false, // no hint for session password
+        this.plugin.settings.showCleartextPassword,
+        "Set session password",
+      );
+      if (!result) return;
+      // Store as a global session password (use empty path as a global entry)
+      this.plugin.sessionManager.put("__session__", result.password, "");
+      this.updateRibbonIcon();
+      new Notice("Session password set.");
+    }
+  }
+
   private lockAll(): void {
     for (const leaf of this.getEncryptedLeaves()) {
       (leaf.view as EncryptedMarkdownView).lockAndClose();
     }
     this.plugin.sessionManager.clear();
+    this.updateRibbonIcon();
     new Notice("All encrypted notes locked.");
   }
 
@@ -321,7 +356,7 @@ export class WholeNoteFeature implements IAFEFeature {
       const leaves = original(type);
       if (type === "markdown") {
         workspace.iterateAllLeaves((leaf: WorkspaceLeaf) => {
-          if (leaf.view instanceof EncryptedMarkdownView) {
+          if (leaf.view instanceof EncryptedMarkdownView && !leaves.includes(leaf)) {
             leaves.push(leaf);
           }
         });
@@ -398,6 +433,35 @@ export class WholeNoteFeature implements IAFEFeature {
     await this.plugin.app.vault.delete(current);
 
     new Notice(`Daily note encrypted: ${newFile.basename}`);
+  }
+
+  /**
+   * Move an action button so it sits right after the bookmark button
+   * in the view header.  Order: [bookmark] [our icon] [edit/view toggle] ...
+   * addAction() prepends, so without this our icon lands before the bookmark.
+   */
+  private positionAfterBookmark(actionsEl: HTMLElement, actionEl: HTMLElement): void {
+    const bookmarkBtn = Array.from(actionsEl.children).find((el) =>
+      el.getAttribute("aria-label")?.toLowerCase().includes("bookmark")
+    );
+    if (bookmarkBtn) {
+      bookmarkBtn.after(actionEl);
+    }
+  }
+
+  /**
+   * Update the ribbon icon and tooltip based on session state:
+   * - lock-keyhole + "Set session password": no passwords stored
+   * - rotate-ccw-key + "Lock all encrypted notes": session active
+   */
+  private updateRibbonIcon(): void {
+    if (!this.ribbonIconEl) return;
+    const hasSession = this.plugin.sessionManager.hasEntries();
+    const icon = hasSession ? "rotate-ccw-key" : "lock-keyhole";
+    const tooltip = hasSession ? "Lock all encrypted notes" : "Set session password";
+    this.ribbonIconEl.empty();
+    setIcon(this.ribbonIconEl, icon);
+    this.ribbonIconEl.setAttribute("aria-label", tooltip);
   }
 
   /** Find all leaves with an EncryptedMarkdownView (by instanceof, not view type). */

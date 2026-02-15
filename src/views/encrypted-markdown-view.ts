@@ -25,7 +25,6 @@ import type AFEPlugin from "../main";
 import { parse, encode, decode, isEncryptedFile, isPendingFile, needsMigration } from "../services/file-data";
 import type { AFEFileData } from "../services/file-data";
 import { deriveKeyFromData, decryptTextWithKey } from "../crypto/index";
-import { PasswordModal } from "../ui/password-modal";
 
 export const VIEW_TYPE_ENCRYPTED = "advanced-file-encryption-encrypted-view";
 
@@ -39,6 +38,14 @@ export class EncryptedMarkdownView extends MarkdownView {
   private isLoadingFile: boolean = false;
   private isSavingInProgress: boolean = false;
 
+  /**
+   * When getViewType() returns "markdown", Obsidian may reuse this leaf
+   * for regular .md files (e.g. following a link). In that case, all our
+   * encryption overrides become transparent pass-throughs to the parent
+   * MarkdownView so the .md file works normally.
+   */
+  private _isPlaintextMode = false;
+
   constructor(leaf: WorkspaceLeaf, plugin: AFEPlugin) {
     super(leaf);
     this.plugin = plugin;
@@ -49,19 +56,27 @@ export class EncryptedMarkdownView extends MarkdownView {
   }
 
   getViewType(): string {
-    return VIEW_TYPE_ENCRYPTED;
+    // Return "markdown" so Obsidian's sidebar panels (backlinks, outgoing
+    // links, local graph, properties) stay visible for encrypted notes.
+    // VIEW_TYPE_ENCRYPTED is still used for registerView/registerExtensions
+    // (factory routing), but the *instance* identifies as "markdown".
+    return "markdown";
   }
 
   getDisplayText(): string {
+    if (this._isPlaintextMode) return super.getDisplayText();
     return this.file?.basename ?? "Encrypted note";
   }
 
   getIcon(): string {
+    if (this._isPlaintextMode) return super.getIcon();
     return "file-lock";
   }
 
   canAcceptExtension(extension: string): boolean {
-    return extension === "locked";
+    // Accept both .locked (our primary) and .md (since getViewType
+    // returns "markdown", Obsidian may route .md files here).
+    return extension === "locked" || extension === "md";
   }
 
   // ── Data interception ────────────────────────────────────────────
@@ -72,6 +87,7 @@ export class EncryptedMarkdownView extends MarkdownView {
    * Otherwise: returns plaintext from the editor (for preview, search, etc.)
    */
   getViewData(): string {
+    if (this._isPlaintextMode) return super.getViewData();
     if (this.isSavingInProgress) {
       return this.encryptedJsonForSave;
     }
@@ -86,6 +102,10 @@ export class EncryptedMarkdownView extends MarkdownView {
    * - If plaintext: pass through
    */
   setViewData(data: string, clear: boolean): void {
+    if (this._isPlaintextMode) {
+      super.setViewData(data, clear);
+      return;
+    }
     if (this.file == null) return;
     if (this.isLoadingFile) return;
 
@@ -112,6 +132,7 @@ export class EncryptedMarkdownView extends MarkdownView {
   }
 
   clear(): void {
+    this._isPlaintextMode = false;
     this.currentPassword = null;
     this.fileData = null;
     this.cachedPlaintext = "";
@@ -124,6 +145,7 @@ export class EncryptedMarkdownView extends MarkdownView {
   // ── Save ─────────────────────────────────────────────────────────
 
   async save(clear?: boolean): Promise<void> {
+    if (this._isPlaintextMode) return super.save(clear);
     if (this.isSavingInProgress) return;
     if (!this.file || !this.isSavingEnabled) return;
 
@@ -164,6 +186,15 @@ export class EncryptedMarkdownView extends MarkdownView {
   // ── File lifecycle ───────────────────────────────────────────────
 
   async onLoadFile(file: TFile): Promise<void> {
+    // If this isn't a .locked file, Obsidian routed a regular .md file
+    // to our view (because getViewType returns "markdown"). Handle it
+    // as a normal MarkdownView with no encryption logic.
+    if (file.extension !== "locked") {
+      this._isPlaintextMode = true;
+      return super.onLoadFile(file);
+    }
+    this._isPlaintextMode = false;
+
     this.isSavingEnabled = false;
     this.isSavingInProgress = false;
     this.currentPassword = null;
@@ -275,6 +306,11 @@ export class EncryptedMarkdownView extends MarkdownView {
   }
 
   async onUnloadFile(file: TFile): Promise<void> {
+    if (this._isPlaintextMode) {
+      this._isPlaintextMode = false;
+      return super.onUnloadFile(file);
+    }
+
     // If a save is already in progress, reset the flag so the final
     // save triggered by super.onUnloadFile can go through.
     if (this.isSavingInProgress) {
@@ -295,6 +331,8 @@ export class EncryptedMarkdownView extends MarkdownView {
   }
 
   async setState(state: any, result: any): Promise<void> {
+    if (this._isPlaintextMode) return super.setState(state, result);
+
     if (state.mode === "preview" && this.isSavingEnabled) {
       await this.save();
     }
@@ -326,32 +364,189 @@ export class EncryptedMarkdownView extends MarkdownView {
 
   async changePassword(): Promise<void> {
     if (!this.file || !this.isSavingEnabled) return;
+    this.showChangePasswordState();
+  }
 
-    const result = await PasswordModal.prompt(
-      this.app,
-      "encrypt",
-      this.fileData?.hint ?? "",
-      this.plugin.settings.confirmPassword,
-      this.plugin.settings.showPasswordHint,
-      this.plugin.settings.showCleartextPassword
-    );
+  /**
+   * Show an inline "Change password" card overlaying the editor.
+   * Cancel returns to the editor without changes.
+   */
+  private showChangePasswordState(): void {
+    const container = this.contentEl;
+    const overlay = container.createDiv("afe-locked-state");
+    const card = overlay.createDiv("afe-unlock-card");
 
-    if (!result) return;
+    // Header: icon + title
+    const header = card.createDiv("afe-unlock-header");
+    const headerIcon = header.createDiv("afe-unlock-header-icon");
+    setIcon(headerIcon, "lock");
+    header.createEl("span", { text: `Change password: ${this.file?.basename ?? "Encrypted note"}` });
 
-    this.currentPassword = result.password;
-    if (this.fileData) {
-      this.fileData.hint = result.hint;
+    // New password field
+    const fieldGroup = card.createDiv("afe-field-group");
+    const labelRow = fieldGroup.createDiv("afe-unlock-label-row");
+    labelRow.createEl("label", { text: "New password", cls: "afe-field-label" });
+    const errorEl = labelRow.createSpan({ cls: "afe-unlock-inline-error" });
+    errorEl.style.display = "none";
+    const inputWrapper = fieldGroup.createDiv("afe-password-wrapper");
+    const defaultType = this.plugin.settings.showCleartextPassword ? "text" : "password";
+    const passwordInput = inputWrapper.createEl("input", {
+      type: defaultType,
+      placeholder: "Enter new password",
+      cls: "afe-input afe-password-input",
+    });
+    const eyeToggle = inputWrapper.createDiv("afe-eye-toggle");
+    setIcon(eyeToggle, defaultType === "password" ? "eye" : "eye-off");
+    eyeToggle.setAttribute("aria-label", "Toggle password visibility");
+    eyeToggle.addEventListener("click", () => {
+      const isHidden = passwordInput.type === "password";
+      passwordInput.type = isHidden ? "text" : "password";
+      eyeToggle.empty();
+      setIcon(eyeToggle, isHidden ? "eye-off" : "eye");
+      // Sync confirm field visibility if it exists
+      if (confirmInput) {
+        confirmInput.type = passwordInput.type;
+        confirmEyeToggle?.empty();
+        if (confirmEyeToggle) setIcon(confirmEyeToggle, isHidden ? "eye-off" : "eye");
+      }
+    });
+
+    // Confirm password field (conditional)
+    let confirmInput: HTMLInputElement | null = null;
+    let confirmEyeToggle: HTMLDivElement | null = null;
+    if (this.plugin.settings.confirmPassword) {
+      const confirmGroup = card.createDiv("afe-field-group");
+      confirmGroup.createEl("label", { text: "Confirm password", cls: "afe-field-label" });
+      const confirmWrapper = confirmGroup.createDiv("afe-password-wrapper");
+      confirmInput = confirmWrapper.createEl("input", {
+        type: defaultType,
+        placeholder: "Confirm password",
+        cls: "afe-input afe-password-input",
+      });
+      confirmEyeToggle = confirmWrapper.createDiv("afe-eye-toggle");
+      setIcon(confirmEyeToggle, defaultType === "password" ? "eye" : "eye-off");
+      confirmEyeToggle.setAttribute("aria-label", "Toggle password visibility");
+      confirmEyeToggle.addEventListener("click", () => {
+        if (!confirmInput || !confirmEyeToggle) return;
+        const isHidden = confirmInput.type === "password";
+        confirmInput.type = isHidden ? "text" : "password";
+        confirmEyeToggle.empty();
+        setIcon(confirmEyeToggle, isHidden ? "eye-off" : "eye");
+      });
+      confirmInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); doChange(); }
+      });
+      confirmInput.addEventListener("input", () => {
+        errorEl.style.display = "none";
+        passwordInput.removeClass("afe-input-error");
+        confirmInput?.removeClass("afe-input-error");
+      });
     }
 
-    this.plugin.sessionManager.put(
-      this.file.path,
-      result.password,
-      result.hint
-    );
+    // Hint field (conditional)
+    let hintInput: HTMLInputElement | null = null;
+    if (this.plugin.settings.showPasswordHint) {
+      const hintGroup = card.createDiv("afe-field-group");
+      hintGroup.createEl("label", { text: "Password hint", cls: "afe-field-label" });
+      hintInput = hintGroup.createEl("input", {
+        type: "text",
+        placeholder: "Optional \u2014 stored unencrypted",
+        cls: "afe-input",
+      });
+      hintInput.value = this.fileData?.hint ?? "";
+      hintInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); doChange(); }
+      });
+    }
 
-    this.cachedPlaintext = "";
-    await this.save();
-    new Notice("Password changed successfully.");
+    // Buttons row
+    const btnRow = card.createDiv("afe-change-pw-buttons");
+
+    const submitBtn = btnRow.createEl("button", {
+      text: "Change password",
+      cls: "mod-cta afe-unlock-btn",
+    });
+
+    const cancelBtn = btnRow.createEl("button", {
+      text: "Cancel",
+      cls: "afe-unlock-btn",
+    });
+
+    // Focus the password input after the view is revealed
+    setTimeout(() => passwordInput.focus(), 100);
+
+    // Submit handler
+    const doChange = async () => {
+      if (!this.file) return;
+
+      const newPassword = passwordInput.value;
+      if (!newPassword) {
+        errorEl.textContent = "Password cannot be empty.";
+        errorEl.style.display = "";
+        passwordInput.addClass("afe-input-error");
+        passwordInput.focus();
+        return;
+      }
+
+      // Check confirm
+      if (confirmInput && newPassword !== confirmInput.value) {
+        errorEl.textContent = "Passwords do not match.";
+        errorEl.style.display = "";
+        confirmInput.addClass("afe-input-error");
+        confirmInput.focus();
+        return;
+      }
+
+      const hint = hintInput?.value ?? "";
+
+      // Disable UI
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Changing...";
+      cancelBtn.disabled = true;
+      passwordInput.disabled = true;
+      if (confirmInput) confirmInput.disabled = true;
+      if (hintInput) hintInput.disabled = true;
+      errorEl.style.display = "none";
+      passwordInput.removeClass("afe-input-error");
+      confirmInput?.removeClass("afe-input-error");
+
+      try {
+        this.currentPassword = newPassword;
+        if (this.fileData) {
+          this.fileData.hint = hint;
+        }
+
+        this.plugin.sessionManager.put(this.file.path, newPassword, hint);
+
+        // Force re-encrypt by clearing cached plaintext
+        this.cachedPlaintext = "";
+        await this.save();
+
+        overlay.remove();
+        new Notice("Password changed successfully.");
+      } catch {
+        errorEl.textContent = "Failed to change password.";
+        errorEl.style.display = "";
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Change password";
+        cancelBtn.disabled = false;
+        passwordInput.disabled = false;
+        if (confirmInput) confirmInput.disabled = false;
+        if (hintInput) hintInput.disabled = false;
+      }
+    };
+
+    // Cancel handler — just remove overlay
+    cancelBtn.addEventListener("click", () => overlay.remove());
+
+    submitBtn.addEventListener("click", doChange);
+    passwordInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); doChange(); }
+    });
+    passwordInput.addEventListener("input", () => {
+      errorEl.style.display = "none";
+      passwordInput.removeClass("afe-input-error");
+    });
   }
 
   /**
@@ -411,7 +606,7 @@ export class EncryptedMarkdownView extends MarkdownView {
     const header = card.createDiv("afe-unlock-header");
     const headerIcon = header.createDiv("afe-unlock-header-icon");
     setIcon(headerIcon, "lock");
-    header.createEl("span", { text: "Encrypted note" });
+    header.createEl("span", { text: `Unlock note: ${this.file?.basename ?? "Encrypted note"}` });
 
     // Hint display
     const hint = this.fileData.hint;
@@ -530,6 +725,7 @@ export class EncryptedMarkdownView extends MarkdownView {
         this.currentPassword = enteredPassword;
         this.cachedPlaintext = plaintext;
         this.encryptedJsonForSave = raw;
+
         overlay.remove();
         super.setViewData(plaintext, false);
         this.isSavingEnabled = true;
@@ -574,7 +770,7 @@ export class EncryptedMarkdownView extends MarkdownView {
     const header = card.createDiv("afe-unlock-header");
     const headerIcon = header.createDiv("afe-unlock-header-icon");
     setIcon(headerIcon, "lock");
-    header.createEl("span", { text: "Set up encryption" });
+    header.createEl("span", { text: `Set up encryption: ${this.file?.basename ?? "New note"}` });
 
     // Password field
     const fieldGroup = card.createDiv("afe-field-group");

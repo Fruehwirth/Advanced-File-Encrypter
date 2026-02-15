@@ -18,6 +18,7 @@ export class PasswordModal extends Modal {
   private confirmRequired: boolean;
   private showHint: boolean;
   private showCleartext: boolean;
+  private heading: string;
   private resolvePromise: ((result: PasswordResult | null) => void) | null = null;
 
   private passwordEl: HTMLInputElement | null = null;
@@ -31,7 +32,8 @@ export class PasswordModal extends Modal {
     hint: string = "",
     confirmRequired: boolean = true,
     showHint: boolean = true,
-    showCleartext: boolean = false
+    showCleartext: boolean = false,
+    heading?: string
   ) {
     super(app);
     this.mode = mode;
@@ -39,6 +41,7 @@ export class PasswordModal extends Modal {
     this.confirmRequired = confirmRequired;
     this.showHint = showHint;
     this.showCleartext = showCleartext;
+    this.heading = heading ?? (mode === "encrypt" ? "Encrypt note" : "Decrypt note");
   }
 
   /**
@@ -51,10 +54,11 @@ export class PasswordModal extends Modal {
     hint: string = "",
     confirmRequired: boolean = true,
     showHint: boolean = true,
-    showCleartext: boolean = false
+    showCleartext: boolean = false,
+    heading?: string
   ): Promise<PasswordResult | null> {
     return new Promise((resolve) => {
-      const modal = new PasswordModal(app, mode, hint, confirmRequired, showHint, showCleartext);
+      const modal = new PasswordModal(app, mode, hint, confirmRequired, showHint, showCleartext, heading);
       modal.resolvePromise = resolve;
       modal.open();
     });
@@ -69,7 +73,7 @@ export class PasswordModal extends Modal {
     const title = contentEl.createDiv("afe-modal-title");
     const iconEl = title.createSpan("afe-modal-icon");
     setIcon(iconEl, this.mode === "encrypt" ? "lock" : "unlock");
-    title.createSpan({ text: this.mode === "encrypt" ? "Encrypt note" : "Decrypt note" });
+    title.createSpan({ text: this.heading });
 
     // Hint display in decrypt mode
     if (this.mode === "decrypt" && this.hint) {
