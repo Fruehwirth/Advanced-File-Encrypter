@@ -1,10 +1,10 @@
 /**
- * Shared types for Flowcrypt plugin.
+ * Shared types for Advanced File Encryption plugin.
  */
 
 import type { SessionMode } from "./services/session-manager";
 
-export interface FlowcryptSettings {
+export interface AFESettings {
   /** Session security mode */
   sessionMode: SessionMode;
 
@@ -33,7 +33,7 @@ export interface FlowcryptSettings {
   showCleartextPassword: boolean;
 }
 
-export const DEFAULT_SETTINGS: FlowcryptSettings = {
+export const DEFAULT_SETTINGS: AFESettings = {
   sessionMode: "session-password",
   sessionTimeout: 30,
   timedPasswordWindow: 60,

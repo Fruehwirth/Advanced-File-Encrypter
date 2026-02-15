@@ -1,8 +1,8 @@
 /**
- * Flowcrypt Crypto — Public API
+ * Advanced File Encryption Crypto — Public API
  *
  * Standalone encryption/decryption using AES-256-GCM with PBKDF2 key derivation.
- * No Obsidian dependencies. Designed to be extracted as @fruehwirth/flowcrypt-crypto.
+ * No Obsidian dependencies. Designed to be extracted as @fruehwirth/afe-crypto.
  *
  * Wire format of encrypted data (base64-encoded):
  *   [IV (ivLength bytes)][Salt (saltLength bytes)][AES-GCM Ciphertext]

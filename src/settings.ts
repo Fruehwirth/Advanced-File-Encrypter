@@ -1,9 +1,9 @@
 /**
- * Flowcrypt settings tab.
+ * Advanced File Encryption settings tab.
  */
 
 import { App, PluginSettingTab, Setting } from "obsidian";
-import type FlowcryptPlugin from "./main";
+import type AFEPlugin from "./main";
 import type { SessionMode } from "./services/session-manager";
 
 const SESSION_MODE_DESCRIPTIONS: Record<SessionMode, { name: string; desc: string }> = {
@@ -25,10 +25,10 @@ const SESSION_MODE_DESCRIPTIONS: Record<SessionMode, { name: string; desc: strin
   },
 };
 
-export class FlowcryptSettingsTab extends PluginSettingTab {
-  plugin: FlowcryptPlugin;
+export class AFESettingsTab extends PluginSettingTab {
+  plugin: AFEPlugin;
 
-  constructor(app: App, plugin: FlowcryptPlugin) {
+  constructor(app: App, plugin: AFEPlugin) {
     super(app, plugin);
     this.plugin = plugin;
   }
@@ -37,7 +37,7 @@ export class FlowcryptSettingsTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: "Flowcrypt Settings" });
+    containerEl.createEl("h2", { text: "Advanced File Encryption" });
 
     // --- Session Security Mode ---
     containerEl.createEl("h3", { text: "Session Security" });
@@ -60,7 +60,7 @@ export class FlowcryptSettingsTab extends PluginSettingTab {
 
     // Description for current mode
     const modeInfo = SESSION_MODE_DESCRIPTIONS[this.plugin.settings.sessionMode];
-    const descEl = containerEl.createDiv("flowcrypt-mode-description");
+    const descEl = containerEl.createDiv("afe-mode-description");
     descEl.createEl("p", { text: modeInfo.desc, cls: "setting-item-description" });
 
     // Session timeout (only for session-password mode)
@@ -159,7 +159,7 @@ export class FlowcryptSettingsTab extends PluginSettingTab {
       if (hasManualSorting) {
         new Setting(containerEl)
           .setName("Preserve file position")
-          .setDesc("Keep the file in the same position in the file explorer when converting between .md and .flwct. Requires the Manual Sorting plugin.")
+          .setDesc("Keep the file in the same position in the file explorer when converting between .md and .locked. Requires the Manual Sorting plugin.")
           .addToggle((toggle) => {
             toggle.setValue(this.plugin.settings.manualSortIntegration);
             toggle.onChange(async (value) => {

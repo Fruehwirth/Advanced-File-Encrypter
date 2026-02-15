@@ -5,27 +5,27 @@
  * - Creating new encrypted notes
  * - Locking/closing all encrypted notes
  * - Changing passwords
- * - Converting notes between .md and .flwct
+ * - Converting notes between .md and .locked
  * - Clearing the session cache
  * - Auto-encrypting new daily notes
  */
 
 import { TFile, TFolder, Notice, Menu, WorkspaceLeaf, MarkdownView } from "obsidian";
-import type { IFlowcryptFeature } from "../feature-interface";
-import type FlowcryptPlugin from "../../main";
+import type { IAFEFeature } from "../feature-interface";
+import type AFEPlugin from "../../main";
 import { NoteConverter } from "./note-converter";
 import { PasswordModal } from "../../ui/password-modal";
-import { encode, FLWCT_EXTENSION } from "../../services/file-data";
+import { encode, LOCKED_EXTENSION, createPendingFile } from "../../services/file-data";
 import {
   EncryptedMarkdownView,
 } from "../../views/encrypted-markdown-view";
 
-export class WholeNoteFeature implements IFlowcryptFeature {
-  private plugin!: FlowcryptPlugin;
+export class WholeNoteFeature implements IAFEFeature {
+  private plugin!: AFEPlugin;
   private converter!: NoteConverter;
   private originalGetLeavesOfType: ((type: string) => WorkspaceLeaf[]) | null = null;
 
-  async onload(plugin: FlowcryptPlugin): Promise<void> {
+  async onload(plugin: AFEPlugin): Promise<void> {
     this.plugin = plugin;
     this.converter = new NoteConverter(plugin);
 
@@ -59,7 +59,7 @@ export class WholeNoteFeature implements IFlowcryptFeature {
       name: "Clear session cache",
       callback: () => {
         plugin.sessionManager.clear();
-        new Notice("Flowcrypt: Session cache cleared.");
+        new Notice("Advanced File Encryption: Session cache cleared.");
       },
     });
 
@@ -79,7 +79,7 @@ export class WholeNoteFeature implements IFlowcryptFeature {
       name: "Decrypt current note",
       checkCallback: (checking) => {
         const file = plugin.app.workspace.getActiveFile();
-        if (!file || file.extension !== FLWCT_EXTENSION) return false;
+        if (!file || file.extension !== LOCKED_EXTENSION) return false;
         if (!checking) this.converter.toDecrypted(file);
         return true;
       },
@@ -102,7 +102,7 @@ export class WholeNoteFeature implements IFlowcryptFeature {
                 .setIcon("lock")
                 .onClick(() => this.converter.toEncrypted(file));
             });
-          } else if (file.extension === FLWCT_EXTENSION) {
+          } else if (file.extension === LOCKED_EXTENSION) {
             menu.addItem((item) => {
               item.setTitle("Decrypt note")
                 .setIcon("unlock")
@@ -138,22 +138,22 @@ export class WholeNoteFeature implements IFlowcryptFeature {
           view.file?.extension === "md"
         ) {
           const actions = (view as any).actionsEl as HTMLElement | undefined;
-          if (actions && !actions.querySelector(".flowcrypt-encrypt-action")) {
+          if (actions && !actions.querySelector(".afe-encrypt-action")) {
             const action = view.addAction("lock", "Encrypt note", () => {
               if (view.file) this.converter.toEncrypted(view.file);
             });
-            action.addClass("flowcrypt-encrypt-action");
+            action.addClass("afe-encrypt-action");
           }
         }
 
-        // .flwct files: add "Unlock" icon to decrypt
+        // .locked files: add "Unlock" icon to decrypt
         if (view instanceof EncryptedMarkdownView) {
           const actions = (view as any).actionsEl as HTMLElement | undefined;
-          if (actions && !actions.querySelector(".flowcrypt-decrypt-action")) {
+          if (actions && !actions.querySelector(".afe-decrypt-action")) {
             const action = view.addAction("unlock", "Decrypt note", () => {
               if (view.file) this.converter.toDecrypted(view.file);
             });
-            action.addClass("flowcrypt-decrypt-action");
+            action.addClass("afe-decrypt-action");
           }
         }
       })
@@ -170,10 +170,10 @@ export class WholeNoteFeature implements IFlowcryptFeature {
 
         // If an encrypted version already exists, the daily notes plugin
         // (or calendar, navbar, etc.) created a duplicate .md. Delete it
-        // and open the .flwct instead.
-        const flwctPath = file.path.replace(/\.md$/, `.${FLWCT_EXTENSION}`);
-        const flwctFile = this.plugin.app.vault.getAbstractFileByPath(flwctPath);
-        if (flwctFile instanceof TFile) {
+        // and open the .locked instead.
+        const lockedPath = file.path.replace(/\.md$/, `.${LOCKED_EXTENSION}`);
+        const lockedFile = this.plugin.app.vault.getAbstractFileByPath(lockedPath);
+        if (lockedFile instanceof TFile) {
           setTimeout(async () => {
             // Delete the duplicate .md
             const current = this.plugin.app.vault.getAbstractFileByPath(file.path);
@@ -182,7 +182,7 @@ export class WholeNoteFeature implements IFlowcryptFeature {
             }
             // Open the encrypted version
             const leaf = this.plugin.app.workspace.getLeaf(false);
-            await leaf.openFile(flwctFile);
+            await leaf.openFile(lockedFile);
           }, 100);
           return;
         }
@@ -194,7 +194,7 @@ export class WholeNoteFeature implements IFlowcryptFeature {
       })
     );
 
-    // --- Patch daily notes command to find .flwct files ---
+    // --- Patch daily notes command to find .locked files ---
 
     plugin.app.workspace.onLayoutReady(() => {
       this.patchDailyNotesCommand();
@@ -222,38 +222,23 @@ export class WholeNoteFeature implements IFlowcryptFeature {
       ?? this.plugin.app.fileManager.getNewFileParent("")
       ?? this.plugin.app.vault.getRoot();
 
-    // Prompt for password
-    const result = await PasswordModal.prompt(
-      this.plugin.app,
-      "encrypt",
-      "",
-      this.plugin.settings.confirmPassword,
-      this.plugin.settings.showPasswordHint,
-      this.plugin.settings.showCleartextPassword
-    );
-    if (!result) return;
-
     // Generate unique filename
     let baseName = "Encrypted note";
     let counter = 0;
-    let filePath = `${targetFolder.path}/${baseName}.${FLWCT_EXTENSION}`;
+    let filePath = `${targetFolder.path}/${baseName}.${LOCKED_EXTENSION}`;
     while (this.plugin.app.vault.getAbstractFileByPath(filePath)) {
       counter++;
-      filePath = `${targetFolder.path}/${baseName} ${counter}.${FLWCT_EXTENSION}`;
+      filePath = `${targetFolder.path}/${baseName} ${counter}.${LOCKED_EXTENSION}`;
     }
 
-    // Create encrypted empty note
-    const encryptedJson = await encode("", result.password, result.hint);
-    const file = await this.plugin.app.vault.create(filePath, encryptedJson);
+    // Create a pending (uninitialized) .locked file — the view will detect
+    // this and show the inline "Set up encryption" card instead of a modal.
+    const pendingContent = createPendingFile();
+    const file = await this.plugin.app.vault.create(filePath, pendingContent);
 
-    // Cache password
-    this.plugin.sessionManager.put(file.path, result.password, result.hint);
-
-    // Open the new note in edit mode
+    // Open the new note — the view's onLoadFile will show the encrypt card
     const leaf = this.plugin.app.workspace.getLeaf(false);
     await leaf.openFile(file, { state: { mode: "source" } });
-
-    new Notice(`Created: ${file.basename}`);
   }
 
   private lockAll(): void {
@@ -274,7 +259,7 @@ export class WholeNoteFeature implements IFlowcryptFeature {
 
   /**
    * Patch the core daily-notes "Open today's daily note" command to check
-   * for an encrypted .flwct version before falling through to the default.
+   * for an encrypted .locked version before falling through to the default.
    * This makes the daily notes button, hotkey, and calendar plugin all
    * open the encrypted daily note if one exists.
    */
@@ -298,14 +283,14 @@ export class WholeNoteFeature implements IFlowcryptFeature {
       const original = command.callback;
       command.callback = async () => {
         const today = (window as any).moment().format(format);
-        const flwctPath = folder
-          ? `${folder}/${today}.${FLWCT_EXTENSION}`
-          : `${today}.${FLWCT_EXTENSION}`;
+        const lockedPath = folder
+          ? `${folder}/${today}.${LOCKED_EXTENSION}`
+          : `${today}.${LOCKED_EXTENSION}`;
 
-        const flwctFile = this.plugin.app.vault.getAbstractFileByPath(flwctPath);
-        if (flwctFile instanceof TFile) {
+        const lockedFile = this.plugin.app.vault.getAbstractFileByPath(lockedPath);
+        if (lockedFile instanceof TFile) {
           const leaf = this.plugin.app.workspace.getLeaf(false);
-          await leaf.openFile(flwctFile);
+          await leaf.openFile(lockedFile);
           return;
         }
 
@@ -394,10 +379,10 @@ export class WholeNoteFeature implements IFlowcryptFeature {
       leaf.detach();
     }
 
-    // Read, encrypt, create .flwct
+    // Read, encrypt, create .locked
     const plaintext = await this.plugin.app.vault.read(current);
     const encryptedJson = await encode(plaintext, password, hint);
-    const newPath = file.path.replace(/\.md$/, `.${FLWCT_EXTENSION}`);
+    const newPath = file.path.replace(/\.md$/, `.${LOCKED_EXTENSION}`);
     const newFile = await this.plugin.app.vault.create(newPath, encryptedJson);
 
     this.plugin.sessionManager.put(newPath, password, hint);

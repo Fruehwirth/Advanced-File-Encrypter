@@ -1,12 +1,12 @@
 /**
- * Feature interface — all Flowcrypt features implement this.
+ * Feature interface — all Advanced File Encryption features implement this.
  * Allows modular loading/unloading and settings UI composition.
  */
 
-import type FlowcryptPlugin from "../main";
+import type AFEPlugin from "../main";
 
-export interface IFlowcryptFeature {
-  onload(plugin: FlowcryptPlugin): Promise<void>;
+export interface IAFEFeature {
+  onload(plugin: AFEPlugin): Promise<void>;
   onunload(): void;
   buildSettingsUi(containerEl: HTMLElement, saveCallback: () => Promise<void>): void;
 }

@@ -1,13 +1,13 @@
-/* Flowcrypt Plugin Styles */
+/* Advanced File Encryption Styles */
 
 /* ── Password Modal ─────────────────────────────────────────────── */
 
-.flowcrypt-password-modal {
+.afe-password-modal {
   padding: 1.5em;
 }
 
 /* Title row with icon */
-.flowcrypt-modal-title {
+.afe-modal-title {
   display: flex;
   align-items: center;
   gap: 0.5em;
@@ -16,18 +16,18 @@
   margin-bottom: 1.25em;
 }
 
-.flowcrypt-modal-icon {
+.afe-modal-icon {
   display: flex;
   color: var(--text-accent);
 }
 
-.flowcrypt-modal-icon svg {
+.afe-modal-icon svg {
   width: 20px;
   height: 20px;
 }
 
 /* Hint display (decrypt mode) */
-.flowcrypt-hint-display {
+.afe-hint-display {
   margin-bottom: 1em;
   padding: 0.5em 0.75em;
   background: var(--background-secondary);
@@ -35,17 +35,17 @@
   font-size: var(--font-ui-small);
 }
 
-.flowcrypt-hint-label {
+.afe-hint-label {
   color: var(--text-muted);
 }
 
-.flowcrypt-hint-text {
+.afe-hint-text {
   font-style: italic;
   color: var(--text-accent);
 }
 
 /* Error */
-.flowcrypt-error {
+.afe-error {
   color: var(--text-error);
   font-size: var(--font-ui-small);
   margin-bottom: 0.5em;
@@ -55,11 +55,11 @@
 }
 
 /* Field groups */
-.flowcrypt-field-group {
+.afe-field-group {
   margin-bottom: 0.75em;
 }
 
-.flowcrypt-field-label {
+.afe-field-label {
   display: block;
   font-size: var(--font-ui-small);
   color: var(--text-muted);
@@ -67,7 +67,7 @@
 }
 
 /* Inputs */
-.flowcrypt-input {
+.afe-input {
   width: 100%;
   padding: 0.5em 0.65em;
   border: 1px solid var(--background-modifier-border);
@@ -79,26 +79,26 @@
   transition: border-color 0.15s ease;
 }
 
-.flowcrypt-input:focus {
+.afe-input:focus {
   border-color: var(--interactive-accent);
 }
 
-.flowcrypt-input::placeholder {
+.afe-input::placeholder {
   color: var(--text-faint);
 }
 
 /* Password wrapper with eye toggle */
-.flowcrypt-password-wrapper {
+.afe-password-wrapper {
   position: relative;
   display: flex;
   align-items: center;
 }
 
-.flowcrypt-password-input {
+.afe-password-input {
   padding-right: 2.5em;
 }
 
-.flowcrypt-eye-toggle {
+.afe-eye-toggle {
   position: absolute;
   right: 0.5em;
   display: flex;
@@ -111,17 +111,17 @@
   transition: color 0.15s ease;
 }
 
-.flowcrypt-eye-toggle:hover {
+.afe-eye-toggle:hover {
   color: var(--text-muted);
 }
 
-.flowcrypt-eye-toggle svg {
+.afe-eye-toggle svg {
   width: 16px;
   height: 16px;
 }
 
 /* Buttons */
-.flowcrypt-modal-buttons {
+.afe-modal-buttons {
   display: flex;
   justify-content: flex-end;
   gap: 0.5em;
@@ -130,7 +130,7 @@
 
 /* ── Locked state overlay ───────────────────────────────────────── */
 
-.flowcrypt-locked-state {
+.afe-locked-state {
   position: absolute;
   inset: 0;
   z-index: 10;
@@ -143,15 +143,89 @@
   color: var(--text-muted);
 }
 
-.flowcrypt-lock-icon svg {
+/* Simple locked state (no form — empty/invalid file) */
+.afe-lock-icon svg {
   width: 48px;
   height: 48px;
   stroke: var(--text-muted);
 }
 
+/* ── Inline unlock card ────────────────────────────────────────── */
+
+.afe-unlock-card {
+  width: 320px;
+  max-width: 90vw;
+  padding: 1.75em 1.5em 1.5em;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-l);
+  display: flex;
+  flex-direction: column;
+  gap: 0.85em;
+}
+
+.afe-unlock-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  font-size: var(--font-ui-large);
+  font-weight: var(--font-semibold);
+  color: var(--text-normal);
+}
+
+.afe-unlock-header-icon {
+  display: flex;
+  color: var(--text-accent);
+}
+
+.afe-unlock-header-icon svg {
+  width: 22px;
+  height: 22px;
+}
+
+.afe-unlock-hint {
+  padding: 0.45em 0.7em;
+  background: var(--background-primary);
+  border-radius: var(--radius-s);
+  font-size: var(--font-ui-small);
+}
+
+.afe-unlock-hint-label {
+  color: var(--text-muted);
+}
+
+.afe-unlock-hint-text {
+  font-style: italic;
+  color: var(--text-accent);
+}
+
+.afe-unlock-label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.afe-unlock-inline-error {
+  color: var(--text-error);
+  font-size: var(--font-ui-smaller);
+}
+
+.afe-input-error {
+  border-color: var(--text-error) !important;
+}
+
+.afe-unlock-card .afe-field-group {
+  margin-bottom: 0;
+}
+
+.afe-unlock-btn {
+  width: 100%;
+  margin-top: 0.25em;
+}
+
 /* ── Settings ───────────────────────────────────────────────────── */
 
-.flowcrypt-mode-description {
+.afe-mode-description {
   margin-top: -0.5em;
   margin-bottom: 1em;
   padding: 0.5em 0.75em;
@@ -159,7 +233,7 @@
   border-radius: var(--radius-s);
 }
 
-.flowcrypt-mode-description p {
+.afe-mode-description p {
   margin: 0;
   font-size: var(--font-ui-small);
   color: var(--text-muted);

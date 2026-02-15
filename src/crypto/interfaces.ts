@@ -1,11 +1,11 @@
 /**
- * Flowcrypt Crypto Interfaces
+ * Advanced File Encryption Crypto Interfaces
  *
- * Designed to be extractable as a standalone @fruehwirth/flowcrypt-crypto package.
+ * Designed to be extractable as a standalone @fruehwirth/afe-crypto package.
  * No Obsidian dependencies — pure Web Crypto API.
  */
 
-/** Parameters describing how data was encrypted. Stored in .flwct files for self-describing decryption. */
+/** Parameters describing how data was encrypted. Stored in .locked files for self-describing decryption. */
 export interface EncryptionParams {
   algorithm: string;       // e.g. "AES-GCM"
   keySize: number;         // e.g. 256

@@ -1,5 +1,5 @@
 /**
- * Note converter — convert between .md and .flwct files.
+ * Note converter — convert between .md and .locked files.
  *
  * If the file being converted is currently open:
  *   - Active tab: reopen the converted file in the same tab, same mode
@@ -8,23 +8,27 @@
  */
 
 import { TFile, Notice, WorkspaceLeaf } from "obsidian";
-import type FlowcryptPlugin from "../../main";
-import { encode, decode, FLWCT_EXTENSION } from "../../services/file-data";
+import type AFEPlugin from "../../main";
+import { encode, decode, LOCKED_EXTENSION, createPendingFile } from "../../services/file-data";
 import { PasswordModal } from "../../ui/password-modal";
 
 export class NoteConverter {
-  private plugin: FlowcryptPlugin;
+  private plugin: AFEPlugin;
 
   /** True while a conversion is in progress. Prevents the create handler
    *  from interfering (e.g. deleting a .md that toDecrypted just created). */
   isConverting = false;
 
-  constructor(plugin: FlowcryptPlugin) {
+  constructor(plugin: AFEPlugin) {
     this.plugin = plugin;
   }
 
   /**
-   * Convert a .md file to an encrypted .flwct file.
+   * Convert a .md file to an encrypted .locked file.
+   *
+   * If a session password is available, encrypts immediately.
+   * Otherwise, creates a pending .locked file and stores the plaintext
+   * temporarily so the view can show an inline "Set up encryption" card.
    */
   async toEncrypted(file: TFile): Promise<void> {
     if (file.extension !== "md") {
@@ -32,23 +36,9 @@ export class NoteConverter {
       return;
     }
 
-    // Try session password first, prompt only if not cached
+    // Try session password first
     let password = this.plugin.sessionManager.getPassword(file.path);
     let hint = "";
-
-    if (!password) {
-      const result = await PasswordModal.prompt(
-        this.plugin.app,
-        "encrypt",
-        "",
-        this.plugin.settings.confirmPassword,
-        this.plugin.settings.showPasswordHint,
-        this.plugin.settings.showCleartextPassword
-      );
-      if (!result) return;
-      password = result.password;
-      hint = result.hint;
-    }
 
     this.isConverting = true;
     try {
@@ -63,17 +53,23 @@ export class NoteConverter {
       // Read plaintext before doing anything destructive
       const plaintext = await this.plugin.app.vault.read(file);
 
-      // Encrypt
-      const encryptedJson = await encode(plaintext, password, hint);
-
       // Compute new path
-      const newPath = file.path.replace(/\.md$/, `.${FLWCT_EXTENSION}`);
+      const newPath = file.path.replace(/\.md$/, `.${LOCKED_EXTENSION}`);
 
-      // Create encrypted file
-      const newFile = await this.plugin.app.vault.create(newPath, encryptedJson);
+      let newFile: TFile;
 
-      // Cache password
-      this.plugin.sessionManager.put(newPath, password, hint);
+      if (password) {
+        // Session password available — encrypt immediately
+        const encryptedJson = await encode(plaintext, password, hint);
+        newFile = await this.plugin.app.vault.create(newPath, encryptedJson);
+        this.plugin.sessionManager.put(newPath, password, hint);
+      } else {
+        // No session password — create a pending file and cache the plaintext
+        // so the view's inline encrypt card can use it after password entry.
+        const pendingContent = createPendingFile();
+        newFile = await this.plugin.app.vault.create(newPath, pendingContent);
+        this.plugin.pendingPlaintext.set(newPath, plaintext);
+      }
 
       // Preserve position in manual-sorting plugin
       await this.updateManualSortOrder(file.path, newPath);
@@ -87,18 +83,20 @@ export class NoteConverter {
       // Delete original .md file
       await this.plugin.app.vault.delete(file);
 
-      new Notice(`Encrypted: ${file.basename}.${FLWCT_EXTENSION}`);
+      if (password) {
+        new Notice(`Encrypted: ${file.basename}.${LOCKED_EXTENSION}`);
+      }
     } finally {
       this.isConverting = false;
     }
   }
 
   /**
-   * Convert an encrypted .flwct file to a decrypted .md file.
+   * Convert an encrypted .locked file to a decrypted .md file.
    */
   async toDecrypted(file: TFile): Promise<void> {
-    if (file.extension !== FLWCT_EXTENSION) {
-      new Notice(`Can only decrypt .${FLWCT_EXTENSION} files.`);
+    if (file.extension !== LOCKED_EXTENSION) {
+      new Notice(`Can only decrypt .${LOCKED_EXTENSION} files.`);
       return;
     }
 
@@ -139,7 +137,7 @@ export class NoteConverter {
       }
 
       // Compute new path
-      const newPath = file.path.replace(new RegExp(`\\.${FLWCT_EXTENSION}$`), ".md");
+      const newPath = file.path.replace(new RegExp(`\\.${LOCKED_EXTENSION}$`), ".md");
 
       // Create decrypted file
       const newFile = await this.plugin.app.vault.create(newPath, plaintext);

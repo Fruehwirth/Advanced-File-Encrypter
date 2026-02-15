@@ -1,5 +1,5 @@
 /**
- * EncryptedMarkdownView — The core of Flowcrypt.
+ * EncryptedMarkdownView — The core of Advanced File Encryption.
  *
  * Extends Obsidian's MarkdownView so encrypted notes get the FULL editor:
  * syntax highlighting, preview mode, links, backlinks, tags, vim mode, etc.
@@ -21,17 +21,17 @@ import {
   setIcon,
 } from "obsidian";
 
-import type FlowcryptPlugin from "../main";
-import { parse, encode, decode, isFlowcryptFile } from "../services/file-data";
-import type { FlowcryptFileData } from "../services/file-data";
+import type AFEPlugin from "../main";
+import { parse, encode, decode, isEncryptedFile, isPendingFile, needsMigration } from "../services/file-data";
+import type { AFEFileData } from "../services/file-data";
 import { deriveKeyFromData, decryptTextWithKey } from "../crypto/index";
 import { PasswordModal } from "../ui/password-modal";
 
-export const VIEW_TYPE_ENCRYPTED = "flowcrypt-encrypted-view";
+export const VIEW_TYPE_ENCRYPTED = "advanced-file-encryption-encrypted-view";
 
 export class EncryptedMarkdownView extends MarkdownView {
-  plugin: FlowcryptPlugin;
-  private fileData: FlowcryptFileData | null = null;
+  plugin: AFEPlugin;
+  private fileData: AFEFileData | null = null;
   private currentPassword: string | null = null;
   private cachedPlaintext: string = "";
   private encryptedJsonForSave: string = "";
@@ -39,7 +39,7 @@ export class EncryptedMarkdownView extends MarkdownView {
   private isLoadingFile: boolean = false;
   private isSavingInProgress: boolean = false;
 
-  constructor(leaf: WorkspaceLeaf, plugin: FlowcryptPlugin) {
+  constructor(leaf: WorkspaceLeaf, plugin: AFEPlugin) {
     super(leaf);
     this.plugin = plugin;
   }
@@ -61,7 +61,7 @@ export class EncryptedMarkdownView extends MarkdownView {
   }
 
   canAcceptExtension(extension: string): boolean {
-    return extension === "flwct";
+    return extension === "locked";
   }
 
   // ── Data interception ────────────────────────────────────────────
@@ -89,7 +89,7 @@ export class EncryptedMarkdownView extends MarkdownView {
     if (this.file == null) return;
     if (this.isLoadingFile) return;
 
-    if (isFlowcryptFile(data)) {
+    if (isEncryptedFile(data)) {
       // Always update the encrypted cache (vault sync, external edit)
       this.encryptedJsonForSave = data;
       if (!this.currentPassword) return;
@@ -137,7 +137,7 @@ export class EncryptedMarkdownView extends MarkdownView {
       const plaintext = super.getViewData();
 
       // Safety: never double-encrypt
-      if (isFlowcryptFile(plaintext)) return;
+      if (isEncryptedFile(plaintext)) return;
 
       // Skip if unchanged
       if (plaintext === this.cachedPlaintext) return;
@@ -183,13 +183,20 @@ export class EncryptedMarkdownView extends MarkdownView {
         return;
       }
 
+      // Check for pending (uninitialized) encrypted note — needs initial password setup
+      if (isPendingFile(rawContent)) {
+        await this.initViewEmpty(file);
+        this.showEncryptState();
+        return;
+      }
+
       // Parse metadata
-      let fileData: FlowcryptFileData;
+      let fileData: AFEFileData;
       try {
         fileData = parse(rawContent);
       } catch {
         await this.initViewEmpty(file);
-        this.showLockedState("Invalid Flowcrypt file format.");
+        this.showLockedState("Invalid encrypted file format.");
         return;
       }
       this.fileData = fileData;
@@ -217,55 +224,14 @@ export class EncryptedMarkdownView extends MarkdownView {
         }
       }
 
-      // During workspace restoration or for background tabs, show locked
-      // state instead of prompting — avoids modal storms on startup.
-      if (plaintext === null &&
-          (!this.app.workspace.layoutReady || this.app.workspace.activeLeaf !== this.leaf)) {
+      // No cached password/key — show locked state instead of prompting.
+      // The user clicks "Unlock" when ready. This avoids modal storms on
+      // startup (workspace restoration, orphaned tab recovery, etc.).
+      // After the first unlock, the session cache auto-decrypts other tabs.
+      if (plaintext === null) {
         await this.initViewEmpty(file);
         this.showLockedState("Encrypted note.");
         return;
-      }
-
-      // Prompt for password (only after workspace is ready, only for active leaf)
-      while (plaintext === null) {
-        const result = await PasswordModal.prompt(
-          this.app,
-          "decrypt",
-          fileData.hint ?? "",
-          false,
-          false,
-          this.plugin.settings.showCleartextPassword
-        );
-        if (!result) {
-          await this.initViewEmpty(file);
-          this.showLockedState("Decryption cancelled.");
-          return;
-        }
-
-        plaintext = await decode(rawContent, result.password);
-        if (plaintext !== null) {
-          password = result.password;
-          if (sessionMgr.getMode() === "keys-only") {
-            const key = await deriveKeyFromData(
-              fileData.data,
-              result.password,
-              fileData.encryption,
-              false
-            );
-            if (key) {
-              sessionMgr.put(
-                file.path,
-                result.password,
-                fileData.hint ?? "",
-                key
-              );
-            }
-          } else {
-            sessionMgr.put(file.path, result.password, fileData.hint ?? "");
-          }
-        } else {
-          new Notice("Wrong password.");
-        }
       }
 
       // Decryption successful
@@ -288,10 +254,13 @@ export class EncryptedMarkdownView extends MarkdownView {
       // MarkdownView's internal state pipeline.
       super.setViewData(plaintext, false);
       this.isSavingEnabled = true;
+
+      // Auto-migrate legacy format files to current format
+      await this.migrateIfNeeded();
     } catch (err) {
       // Defensive: if anything fails, show locked state instead of crashing.
       // This prevents the "plugin has gone away" error on workspace restore.
-      console.error("Flowcrypt: failed to load encrypted file", file.path, err);
+      console.error("Advanced File Encryption: failed to load encrypted file", file.path, err);
       try {
         await this.initViewEmpty(file);
         this.showLockedState("Failed to load. Click to retry.");
@@ -385,6 +354,32 @@ export class EncryptedMarkdownView extends MarkdownView {
     new Notice("Password changed successfully.");
   }
 
+  /**
+   * Auto-migrate legacy format files (v1) to current format (v2).
+   * Called after successful decryption when isSavingEnabled is true.
+   * Silently re-encodes with the current password and writes back to disk.
+   */
+  private async migrateIfNeeded(): Promise<void> {
+    if (!this.file || !this.fileData || !this.currentPassword) return;
+    if (!needsMigration(this.fileData)) return;
+
+    try {
+      const plaintext = this.cachedPlaintext;
+      const hint = this.fileData.hint ?? "";
+      const newJson = await encode(plaintext, this.currentPassword, hint);
+
+      // Write migrated format back to disk
+      await this.app.vault.modify(this.file, newJson);
+
+      // Update internal state with new format
+      this.encryptedJsonForSave = newJson;
+      this.fileData = parse(newJson);
+    } catch (err) {
+      // Migration failed — don't break the user experience, just log it
+      console.error("Advanced File Encryption: failed to migrate file format", this.file.path, err);
+    }
+  }
+
   // ── Private helpers ──────────────────────────────────────────────
 
   private async initViewEmpty(file: TFile): Promise<void> {
@@ -399,107 +394,367 @@ export class EncryptedMarkdownView extends MarkdownView {
 
   private showLockedState(message: string): void {
     const container = this.contentEl;
-    const overlay = container.createDiv("flowcrypt-locked-state");
-    const iconEl = overlay.createDiv("flowcrypt-lock-icon");
-    setIcon(iconEl, "lock");
-    overlay.createEl("p", { text: message });
+    const overlay = container.createDiv("afe-locked-state");
 
-    if (this.fileData) {
-      const btn = overlay.createEl("button", {
-        text: "Unlock",
-        cls: "mod-cta",
-      });
-      btn.addEventListener("click", async () => {
-        if (!this.file) return;
-        overlay.remove();
+    // If no fileData (empty file, invalid format), show simple message only
+    if (!this.fileData) {
+      const iconEl = overlay.createDiv("afe-lock-icon");
+      setIcon(iconEl, "lock");
+      overlay.createEl("p", { text: message });
+      return;
+    }
 
+    // ── Inline unlock form ──────────────────────────────────────────
+    const card = overlay.createDiv("afe-unlock-card");
+
+    // Header: icon + title
+    const header = card.createDiv("afe-unlock-header");
+    const headerIcon = header.createDiv("afe-unlock-header-icon");
+    setIcon(headerIcon, "lock");
+    header.createEl("span", { text: "Encrypted note" });
+
+    // Hint display
+    const hint = this.fileData.hint;
+    if (hint) {
+      const hintEl = card.createDiv("afe-unlock-hint");
+      hintEl.createSpan({ text: "Hint: ", cls: "afe-unlock-hint-label" });
+      hintEl.createSpan({ text: hint, cls: "afe-unlock-hint-text" });
+    }
+
+    // Password field with eye toggle
+    const fieldGroup = card.createDiv("afe-field-group");
+    const labelRow = fieldGroup.createDiv("afe-unlock-label-row");
+    labelRow.createEl("label", { text: "Password", cls: "afe-field-label" });
+    const errorEl = labelRow.createSpan({ cls: "afe-unlock-inline-error" });
+    errorEl.style.display = "none";
+    const inputWrapper = fieldGroup.createDiv("afe-password-wrapper");
+    const defaultType = this.plugin.settings.showCleartextPassword ? "text" : "password";
+    const passwordInput = inputWrapper.createEl("input", {
+      type: defaultType,
+      placeholder: "Enter password",
+      cls: "afe-input afe-password-input",
+    });
+    const eyeToggle = inputWrapper.createDiv("afe-eye-toggle");
+    setIcon(eyeToggle, defaultType === "password" ? "eye" : "eye-off");
+    eyeToggle.setAttribute("aria-label", "Toggle password visibility");
+    eyeToggle.addEventListener("click", () => {
+      const isHidden = passwordInput.type === "password";
+      passwordInput.type = isHidden ? "text" : "password";
+      eyeToggle.empty();
+      setIcon(eyeToggle, isHidden ? "eye-off" : "eye");
+    });
+
+    // Unlock button
+    const btn = card.createEl("button", {
+      text: "Unlock",
+      cls: "mod-cta afe-unlock-btn",
+    });
+
+    // Focus the password input after the view is revealed
+    setTimeout(() => passwordInput.focus(), 100);
+
+    // Submit handler
+    const doUnlock = async () => {
+      if (!this.file) return;
+
+      const enteredPassword = passwordInput.value;
+      if (!enteredPassword) {
+        errorEl.textContent = "Password cannot be empty.";
+        errorEl.style.display = "";
+        passwordInput.addClass("afe-input-error");
+        passwordInput.focus();
+        return;
+      }
+
+      // Disable UI while decrypting
+      btn.disabled = true;
+      btn.textContent = "Decrypting...";
+      passwordInput.disabled = true;
+      errorEl.style.display = "none";
+      passwordInput.removeClass("afe-input-error");
+
+      try {
         const raw = await this.app.vault.read(this.file);
-        let fileData: FlowcryptFileData;
+        let fileData: AFEFileData;
         try {
           fileData = parse(raw);
         } catch {
-          new Notice("Invalid Flowcrypt file format.");
+          errorEl.textContent = "Invalid file format.";
+          errorEl.style.display = "";
+          passwordInput.addClass("afe-input-error");
+          btn.disabled = false;
+          btn.textContent = "Unlock";
+          passwordInput.disabled = false;
           return;
         }
         this.fileData = fileData;
 
-        const sessionMgr = this.plugin.sessionManager;
-        let password: string | null = null;
-        let plaintext: string | null = null;
-
-        // Try session cache first (auto-unlock if password is cached)
-        password = sessionMgr.getPassword(this.file.path);
-        if (password) {
-          plaintext = await decode(raw, password);
-          if (plaintext === null) password = null;
-        }
-
-        // Try cached key (keys-only mode)
-        if (plaintext === null && sessionMgr.getMode() === "keys-only") {
-          const key = sessionMgr.getKey(this.file.path);
-          if (key) {
-            plaintext = await decryptTextWithKey(
-              fileData.data,
-              key,
-              fileData.encryption
-            );
-          }
-        }
-
-        // Prompt only if no cached password/key worked
+        const plaintext = await decode(raw, enteredPassword);
         if (plaintext === null) {
-          const result = await PasswordModal.prompt(
-            this.app,
-            "decrypt",
-            fileData.hint ?? "",
+          errorEl.textContent = "Incorrect password";
+          errorEl.style.display = "";
+          passwordInput.addClass("afe-input-error");
+          btn.disabled = false;
+          btn.textContent = "Unlock";
+          passwordInput.disabled = false;
+          passwordInput.value = "";
+          passwordInput.focus();
+          return;
+        }
+
+        // Success — cache in session
+        const sessionMgr = this.plugin.sessionManager;
+        if (sessionMgr.getMode() === "keys-only") {
+          const key = await deriveKeyFromData(
+            fileData.data,
+            enteredPassword,
+            fileData.encryption,
             false
           );
-          if (!result) {
-            this.showLockedState("Decryption cancelled.");
-            return;
-          }
-
-          plaintext = await decode(raw, result.password);
-          if (plaintext === null) {
-            new Notice("Wrong password.");
-            this.showLockedState("Wrong password.");
-            return;
-          }
-          password = result.password;
-        }
-
-        // Cache in session
-        if (password) {
-          if (sessionMgr.getMode() === "keys-only") {
-            const key = await deriveKeyFromData(
-              fileData.data,
-              password,
-              fileData.encryption,
-              false
-            );
-            if (key) {
-              sessionMgr.put(
-                this.file.path,
-                password,
-                fileData.hint ?? "",
-                key
-              );
-            }
-          } else {
+          if (key) {
             sessionMgr.put(
               this.file.path,
-              password,
-              fileData.hint ?? ""
+              enteredPassword,
+              fileData.hint ?? "",
+              key
             );
           }
+        } else {
+          sessionMgr.put(
+            this.file.path,
+            enteredPassword,
+            fileData.hint ?? ""
+          );
         }
 
-        this.currentPassword = password;
+        this.currentPassword = enteredPassword;
         this.cachedPlaintext = plaintext;
         this.encryptedJsonForSave = raw;
+        overlay.remove();
         super.setViewData(plaintext, false);
         this.isSavingEnabled = true;
+
+        // Auto-migrate legacy format files to current format
+        await this.migrateIfNeeded();
+      } catch {
+        errorEl.textContent = "Failed to decrypt";
+        errorEl.style.display = "";
+        passwordInput.addClass("afe-input-error");
+        btn.disabled = false;
+        btn.textContent = "Unlock";
+        passwordInput.disabled = false;
+      }
+    };
+
+    btn.addEventListener("click", doUnlock);
+    passwordInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        doUnlock();
+      }
+    });
+    passwordInput.addEventListener("input", () => {
+      errorEl.style.display = "none";
+      passwordInput.removeClass("afe-input-error");
+    });
+  }
+
+  /**
+   * Show an inline "Set password" card for newly created encrypted notes.
+   * This mirrors showLockedState() but for the initial encryption setup.
+   * The user enters a password (+ optional confirm + hint), and the note
+   * is encrypted and saved with that password.
+   */
+  private showEncryptState(): void {
+    const container = this.contentEl;
+    const overlay = container.createDiv("afe-locked-state");
+    const card = overlay.createDiv("afe-unlock-card");
+
+    // Header: icon + title
+    const header = card.createDiv("afe-unlock-header");
+    const headerIcon = header.createDiv("afe-unlock-header-icon");
+    setIcon(headerIcon, "lock");
+    header.createEl("span", { text: "Set up encryption" });
+
+    // Password field
+    const fieldGroup = card.createDiv("afe-field-group");
+    const labelRow = fieldGroup.createDiv("afe-unlock-label-row");
+    labelRow.createEl("label", { text: "Password", cls: "afe-field-label" });
+    const errorEl = labelRow.createSpan({ cls: "afe-unlock-inline-error" });
+    errorEl.style.display = "none";
+    const inputWrapper = fieldGroup.createDiv("afe-password-wrapper");
+    const defaultType = this.plugin.settings.showCleartextPassword ? "text" : "password";
+    const passwordInput = inputWrapper.createEl("input", {
+      type: defaultType,
+      placeholder: "Enter password",
+      cls: "afe-input afe-password-input",
+    });
+    const eyeToggle = inputWrapper.createDiv("afe-eye-toggle");
+    setIcon(eyeToggle, defaultType === "password" ? "eye" : "eye-off");
+    eyeToggle.setAttribute("aria-label", "Toggle password visibility");
+    eyeToggle.addEventListener("click", () => {
+      const isHidden = passwordInput.type === "password";
+      passwordInput.type = isHidden ? "text" : "password";
+      eyeToggle.empty();
+      setIcon(eyeToggle, isHidden ? "eye-off" : "eye");
+      // Sync confirm field visibility if it exists
+      if (confirmInput) {
+        confirmInput.type = passwordInput.type;
+        confirmEyeToggle?.empty();
+        if (confirmEyeToggle) setIcon(confirmEyeToggle, isHidden ? "eye-off" : "eye");
+      }
+    });
+
+    // Confirm password field (conditional)
+    let confirmInput: HTMLInputElement | null = null;
+    let confirmEyeToggle: HTMLDivElement | null = null;
+    if (this.plugin.settings.confirmPassword) {
+      const confirmGroup = card.createDiv("afe-field-group");
+      confirmGroup.createEl("label", { text: "Confirm password", cls: "afe-field-label" });
+      const confirmWrapper = confirmGroup.createDiv("afe-password-wrapper");
+      confirmInput = confirmWrapper.createEl("input", {
+        type: defaultType,
+        placeholder: "Confirm password",
+        cls: "afe-input afe-password-input",
+      });
+      confirmEyeToggle = confirmWrapper.createDiv("afe-eye-toggle");
+      setIcon(confirmEyeToggle, defaultType === "password" ? "eye" : "eye-off");
+      confirmEyeToggle.setAttribute("aria-label", "Toggle password visibility");
+      confirmEyeToggle.addEventListener("click", () => {
+        if (!confirmInput || !confirmEyeToggle) return;
+        const isHidden = confirmInput.type === "password";
+        confirmInput.type = isHidden ? "text" : "password";
+        confirmEyeToggle.empty();
+        setIcon(confirmEyeToggle, isHidden ? "eye-off" : "eye");
+      });
+      confirmInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); doEncrypt(); }
+      });
+      confirmInput.addEventListener("input", () => {
+        errorEl.style.display = "none";
+        passwordInput.removeClass("afe-input-error");
+        confirmInput?.removeClass("afe-input-error");
       });
     }
+
+    // Hint field (conditional)
+    let hintInput: HTMLInputElement | null = null;
+    if (this.plugin.settings.showPasswordHint) {
+      const hintGroup = card.createDiv("afe-field-group");
+      hintGroup.createEl("label", { text: "Password hint", cls: "afe-field-label" });
+      hintInput = hintGroup.createEl("input", {
+        type: "text",
+        placeholder: "Optional \u2014 stored unencrypted",
+        cls: "afe-input",
+      });
+      hintInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); doEncrypt(); }
+      });
+    }
+
+    // Encrypt button
+    const btn = card.createEl("button", {
+      text: "Encrypt",
+      cls: "mod-cta afe-unlock-btn",
+    });
+
+    // Focus the password input after the view is revealed
+    setTimeout(() => passwordInput.focus(), 100);
+
+    // Submit handler
+    const doEncrypt = async () => {
+      if (!this.file) return;
+
+      const enteredPassword = passwordInput.value;
+      if (!enteredPassword) {
+        errorEl.textContent = "Password cannot be empty.";
+        errorEl.style.display = "";
+        passwordInput.addClass("afe-input-error");
+        passwordInput.focus();
+        return;
+      }
+
+      // Check confirm password
+      if (confirmInput && enteredPassword !== confirmInput.value) {
+        errorEl.textContent = "Passwords do not match.";
+        errorEl.style.display = "";
+        confirmInput.addClass("afe-input-error");
+        confirmInput.focus();
+        return;
+      }
+
+      const hint = hintInput?.value ?? "";
+
+      // Disable UI while encrypting
+      btn.disabled = true;
+      btn.textContent = "Encrypting...";
+      passwordInput.disabled = true;
+      if (confirmInput) confirmInput.disabled = true;
+      if (hintInput) hintInput.disabled = true;
+      errorEl.style.display = "none";
+      passwordInput.removeClass("afe-input-error");
+      confirmInput?.removeClass("afe-input-error");
+
+      try {
+        // Retrieve pending plaintext if this note was converted from .md,
+        // otherwise encrypt empty content for a brand new note.
+        const pendingPlaintext = this.plugin.pendingPlaintext.get(this.file.path) ?? "";
+        this.plugin.pendingPlaintext.delete(this.file.path);
+
+        const encryptedJson = await encode(pendingPlaintext, enteredPassword, hint);
+
+        // Write to disk
+        await this.app.vault.modify(this.file, encryptedJson);
+
+        // Set up internal state
+        this.fileData = parse(encryptedJson);
+        this.currentPassword = enteredPassword;
+        this.cachedPlaintext = pendingPlaintext;
+        this.encryptedJsonForSave = encryptedJson;
+
+        // Cache in session manager
+        const sessionMgr = this.plugin.sessionManager;
+        if (sessionMgr.getMode() === "keys-only") {
+          const key = await deriveKeyFromData(
+            this.fileData.data,
+            enteredPassword,
+            this.fileData.encryption,
+            false
+          );
+          if (key) {
+            sessionMgr.put(this.file.path, enteredPassword, hint, key);
+          }
+        } else {
+          sessionMgr.put(this.file.path, enteredPassword, hint);
+        }
+
+        // Remove overlay and enable editing
+        overlay.remove();
+        super.setViewData(pendingPlaintext, false);
+        this.isSavingEnabled = true;
+
+        new Notice(`Encrypted: ${this.file.basename}`);
+      } catch {
+        errorEl.textContent = "Failed to encrypt.";
+        errorEl.style.display = "";
+        btn.disabled = false;
+        btn.textContent = "Encrypt";
+        passwordInput.disabled = false;
+        if (confirmInput) confirmInput.disabled = false;
+        if (hintInput) hintInput.disabled = false;
+      }
+    };
+
+    btn.addEventListener("click", doEncrypt);
+    passwordInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        doEncrypt();
+      }
+    });
+    passwordInput.addEventListener("input", () => {
+      errorEl.style.display = "none";
+      passwordInput.removeClass("afe-input-error");
+    });
   }
 }

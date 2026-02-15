@@ -1,6 +1,6 @@
 {
-  "name": "flowcrypt",
-  "version": "0.1.0",
+  "name": "advanced-file-encryption",
+  "version": "0.7.0",
   "description": "Transparent whole-note encryption for Obsidian",
   "main": "main.js",
   "scripts": {

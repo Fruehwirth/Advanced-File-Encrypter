@@ -1,33 +1,43 @@
 /**
- * Flowcrypt — Transparent whole-note encryption for Obsidian.
+ * Advanced File Encryption — Transparent whole-note encryption for Obsidian.
  *
- * Notes are encrypted on disk (.flwct files) but appear as normal markdown
+ * Notes are encrypted on disk (.locked files) but appear as normal markdown
  * in the editor. Keys and plaintext exist only in memory and are cleared
  * when Obsidian closes.
  *
  * Architecture:
- *   crypto/          — Standalone encryption package (extractable as @fruehwirth/flowcrypt-crypto)
+ *   crypto/          — Standalone encryption package (extractable as @fruehwirth/afe-crypto)
  *   services/        — File format handling, session/key management
- *   views/           — Custom MarkdownView for .flwct files
+ *   views/           — Custom MarkdownView for .locked files
  *   features/        — Modular feature modules (whole-note, future: voice recorder, hardware key)
  *   ui/              — Modals and UI components
  */
 
-import { Plugin, MarkdownView } from "obsidian";
-import { FlowcryptSettings, DEFAULT_SETTINGS } from "./types";
+import { Plugin, MarkdownView, TFile } from "obsidian";
+import { AFESettings, DEFAULT_SETTINGS } from "./types";
 import { SessionManager } from "./services/session-manager";
+import { LinkMetadataService } from "./services/link-metadata";
 import {
   VIEW_TYPE_ENCRYPTED,
   EncryptedMarkdownView,
 } from "./views/encrypted-markdown-view";
 import { WholeNoteFeature } from "./features/whole-note/feature";
-import { FlowcryptSettingsTab } from "./settings";
-import { FLWCT_EXTENSION } from "./services/file-data";
+import { AFESettingsTab } from "./settings";
+import { LOCKED_EXTENSION } from "./services/file-data";
 
-export default class FlowcryptPlugin extends Plugin {
-  settings!: FlowcryptSettings;
+export default class AFEPlugin extends Plugin {
+  settings!: AFESettings;
   sessionManager!: SessionManager;
+  linkMetadata!: LinkMetadataService;
   private wholeNoteFeature!: WholeNoteFeature;
+
+  /**
+   * Temporary plaintext storage for notes being converted from .md to .locked
+   * when no session password is available. The view's inline encrypt card
+   * retrieves and clears this after the user enters a password.
+   * Key: file path, Value: original plaintext
+   */
+  pendingPlaintext = new Map<string, string>();
 
   async onload(): Promise<void> {
     // Load settings
@@ -40,13 +50,13 @@ export default class FlowcryptPlugin extends Plugin {
       this.settings.timedPasswordWindow
     );
 
-    // Register the .flwct file extension with our custom view
+    // Register the .locked file extension with our custom view
     this.registerView(VIEW_TYPE_ENCRYPTED, (leaf) => {
       return new EncryptedMarkdownView(leaf, this);
     });
 
-    // Register .flwct as a known extension
-    this.registerExtensions([FLWCT_EXTENSION], VIEW_TYPE_ENCRYPTED);
+    // Register .locked as a known extension
+    this.registerExtensions([LOCKED_EXTENSION], VIEW_TYPE_ENCRYPTED);
 
     // Handle file renames — keep session manager in sync
     this.registerEvent(
@@ -55,7 +65,7 @@ export default class FlowcryptPlugin extends Plugin {
       })
     );
 
-    // Safety net: if a .flwct file somehow opens in a regular MarkdownView
+    // Safety net: if a .locked file somehow opens in a regular MarkdownView
     // (e.g. during startup race, plugin reload, or leftover workspace state),
     // swap it to our encrypted view.
     this.registerEvent(
@@ -65,7 +75,7 @@ export default class FlowcryptPlugin extends Plugin {
         if (
           view instanceof MarkdownView &&
           !(view instanceof EncryptedMarkdownView) &&
-          view.file?.extension === FLWCT_EXTENSION
+          view.file?.extension === LOCKED_EXTENSION
         ) {
           const state = leaf.getViewState();
           state.type = VIEW_TYPE_ENCRYPTED;
@@ -90,12 +100,12 @@ export default class FlowcryptPlugin extends Plugin {
           return;
         }
 
-        // Fix .flwct files stuck in a regular MarkdownView (migration
+        // Fix .locked files stuck in a regular MarkdownView (migration
         // from old workspace state where getViewType returned "markdown").
         if (
           leaf.view instanceof MarkdownView &&
           !(leaf.view instanceof EncryptedMarkdownView) &&
-          leaf.view.file?.extension === FLWCT_EXTENSION
+          leaf.view.file?.extension === LOCKED_EXTENSION
         ) {
           viewState.type = VIEW_TYPE_ENCRYPTED;
           leaf.setViewState(viewState);
@@ -111,7 +121,7 @@ export default class FlowcryptPlugin extends Plugin {
     await this.wholeNoteFeature.onload(this);
 
     // Settings tab
-    this.addSettingTab(new FlowcryptSettingsTab(this.app, this));
+    this.addSettingTab(new AFESettingsTab(this.app, this));
   }
 
   onunload(): void {

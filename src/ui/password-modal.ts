@@ -63,23 +63,23 @@ export class PasswordModal extends Modal {
   onOpen(): void {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.addClass("flowcrypt-password-modal");
+    contentEl.addClass("afe-password-modal");
 
     // Title
-    const title = contentEl.createDiv("flowcrypt-modal-title");
-    const iconEl = title.createSpan("flowcrypt-modal-icon");
+    const title = contentEl.createDiv("afe-modal-title");
+    const iconEl = title.createSpan("afe-modal-icon");
     setIcon(iconEl, this.mode === "encrypt" ? "lock" : "unlock");
     title.createSpan({ text: this.mode === "encrypt" ? "Encrypt note" : "Decrypt note" });
 
     // Hint display in decrypt mode
     if (this.mode === "decrypt" && this.hint) {
-      const hintContainer = contentEl.createDiv("flowcrypt-hint-display");
-      hintContainer.createSpan({ text: "Hint: ", cls: "flowcrypt-hint-label" });
-      hintContainer.createSpan({ text: this.hint, cls: "flowcrypt-hint-text" });
+      const hintContainer = contentEl.createDiv("afe-hint-display");
+      hintContainer.createSpan({ text: "Hint: ", cls: "afe-hint-label" });
+      hintContainer.createSpan({ text: this.hint, cls: "afe-hint-text" });
     }
 
     // Error display
-    this.errorEl = contentEl.createDiv("flowcrypt-error");
+    this.errorEl = contentEl.createDiv("afe-error");
     this.errorEl.style.display = "none";
 
     // Password field
@@ -94,19 +94,19 @@ export class PasswordModal extends Modal {
 
     // Hint field (encrypt mode only, when enabled)
     if (this.mode === "encrypt" && this.showHint) {
-      const group = contentEl.createDiv("flowcrypt-field-group");
-      group.createEl("label", { text: "Password hint", cls: "flowcrypt-field-label" });
+      const group = contentEl.createDiv("afe-field-group");
+      group.createEl("label", { text: "Password hint", cls: "afe-field-label" });
       this.hintEl = group.createEl("input", {
         type: "text",
         placeholder: "Optional — stored unencrypted",
-        cls: "flowcrypt-input",
+        cls: "afe-input",
       });
       this.hintEl.value = this.hint;
       this.hintEl.addEventListener("keydown", (e) => this.handleKeydown(e));
     }
 
     // Buttons
-    const buttons = contentEl.createDiv("flowcrypt-modal-buttons");
+    const buttons = contentEl.createDiv("afe-modal-buttons");
 
     const submitBtn = buttons.createEl("button", {
       text: this.mode === "encrypt" ? "Encrypt" : "Decrypt",
@@ -132,17 +132,17 @@ export class PasswordModal extends Modal {
     placeholder: string,
     defaultType: string
   ): HTMLInputElement {
-    const group = parent.createDiv("flowcrypt-field-group");
-    group.createEl("label", { text: label, cls: "flowcrypt-field-label" });
+    const group = parent.createDiv("afe-field-group");
+    group.createEl("label", { text: label, cls: "afe-field-label" });
 
-    const inputWrapper = group.createDiv("flowcrypt-password-wrapper");
+    const inputWrapper = group.createDiv("afe-password-wrapper");
     const input = inputWrapper.createEl("input", {
       type: defaultType,
       placeholder,
-      cls: "flowcrypt-input flowcrypt-password-input",
+      cls: "afe-input afe-password-input",
     });
 
-    const toggle = inputWrapper.createDiv("flowcrypt-eye-toggle");
+    const toggle = inputWrapper.createDiv("afe-eye-toggle");
     setIcon(toggle, defaultType === "password" ? "eye" : "eye-off");
     toggle.setAttribute("aria-label", "Toggle password visibility");
     toggle.addEventListener("click", () => {
