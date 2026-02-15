@@ -1,0 +1,166 @@
+/* Flowcrypt Plugin Styles */
+
+/* ── Password Modal ─────────────────────────────────────────────── */
+
+.flowcrypt-password-modal {
+  padding: 1.5em;
+}
+
+/* Title row with icon */
+.flowcrypt-modal-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  font-size: var(--font-ui-large);
+  font-weight: var(--font-semibold);
+  margin-bottom: 1.25em;
+}
+
+.flowcrypt-modal-icon {
+  display: flex;
+  color: var(--text-accent);
+}
+
+.flowcrypt-modal-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* Hint display (decrypt mode) */
+.flowcrypt-hint-display {
+  margin-bottom: 1em;
+  padding: 0.5em 0.75em;
+  background: var(--background-secondary);
+  border-radius: var(--radius-s);
+  font-size: var(--font-ui-small);
+}
+
+.flowcrypt-hint-label {
+  color: var(--text-muted);
+}
+
+.flowcrypt-hint-text {
+  font-style: italic;
+  color: var(--text-accent);
+}
+
+/* Error */
+.flowcrypt-error {
+  color: var(--text-error);
+  font-size: var(--font-ui-small);
+  margin-bottom: 0.5em;
+  padding: 0.4em 0.75em;
+  background: var(--background-modifier-error);
+  border-radius: var(--radius-s);
+}
+
+/* Field groups */
+.flowcrypt-field-group {
+  margin-bottom: 0.75em;
+}
+
+.flowcrypt-field-label {
+  display: block;
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+  margin-bottom: 0.3em;
+}
+
+/* Inputs */
+.flowcrypt-input {
+  width: 100%;
+  padding: 0.5em 0.65em;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-size: var(--font-ui-medium);
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.flowcrypt-input:focus {
+  border-color: var(--interactive-accent);
+}
+
+.flowcrypt-input::placeholder {
+  color: var(--text-faint);
+}
+
+/* Password wrapper with eye toggle */
+.flowcrypt-password-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.flowcrypt-password-input {
+  padding-right: 2.5em;
+}
+
+.flowcrypt-eye-toggle {
+  position: absolute;
+  right: 0.5em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--text-faint);
+  padding: 0.25em;
+  border-radius: var(--radius-s);
+  transition: color 0.15s ease;
+}
+
+.flowcrypt-eye-toggle:hover {
+  color: var(--text-muted);
+}
+
+.flowcrypt-eye-toggle svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* Buttons */
+.flowcrypt-modal-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5em;
+  margin-top: 1.25em;
+}
+
+/* ── Locked state overlay ───────────────────────────────────────── */
+
+.flowcrypt-locked-state {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  background: var(--background-primary);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1em;
+  color: var(--text-muted);
+}
+
+.flowcrypt-lock-icon svg {
+  width: 48px;
+  height: 48px;
+  stroke: var(--text-muted);
+}
+
+/* ── Settings ───────────────────────────────────────────────────── */
+
+.flowcrypt-mode-description {
+  margin-top: -0.5em;
+  margin-bottom: 1em;
+  padding: 0.5em 0.75em;
+  background: var(--background-secondary);
+  border-radius: var(--radius-s);
+}
+
+.flowcrypt-mode-description p {
+  margin: 0;
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
