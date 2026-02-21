@@ -132,7 +132,9 @@ export class EncryptedMarkdownView extends MarkdownView {
   }
 
   clear(): void {
-    this._isPlaintextMode = false;
+    // Do NOT reset _isPlaintextMode here — it is set by onLoadFile before
+    // super.onLoadFile(), which calls clear() internally. Resetting it here
+    // would break .md files loaded in this view (locked → md transitions).
     this.currentPassword = null;
     this.fileData = null;
     this.cachedPlaintext = "";
@@ -279,6 +281,15 @@ export class EncryptedMarkdownView extends MarkdownView {
         this.isLoadingFile = false;
       }
 
+      // Restore encryption state — clear() is called during super.onLoadFile
+      // and wipes currentPassword, cachedPlaintext, etc. Without this,
+      // subsequent setViewData calls (e.g. from link/metadata resolution)
+      // silently drop encrypted data because currentPassword is null.
+      this.currentPassword = password;
+      this.cachedPlaintext = plaintext;
+      this.encryptedJsonForSave = rawContent;
+      this.fileData = fileData;
+
       // Set decrypted plaintext into the now-initialized editor.
       // Must be AFTER super.onLoadFile so the CM6 editor and toolbar
       // are fully created. Uses super.setViewData to properly update
@@ -338,9 +349,13 @@ export class EncryptedMarkdownView extends MarkdownView {
     }
 
     this.isSavingEnabled = false;
+    const fileBefore = this.file?.path;
     try {
       await super.setState(state, result);
-      if (this.cachedPlaintext) {
+      // Only restore cached plaintext for mode changes (source↔preview)
+      // on the SAME file. During file transitions, cachedPlaintext holds
+      // the previous file's content and must not overwrite the new file.
+      if (this.cachedPlaintext && this.file?.path === fileBefore) {
         super.setViewData(this.cachedPlaintext, false);
       }
     } finally {

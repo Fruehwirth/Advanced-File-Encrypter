@@ -382,6 +382,9 @@ export class WholeNoteFeature implements IAFEFeature {
    * Auto-encrypt a file using the session password. Silent — never prompts.
    * If no password is cached, the file stays as .md until the user encrypts
    * it manually or a session password becomes available.
+   *
+   * Uses the blank-tab approach (same as NoteConverter) to avoid breaking
+   * the local graph panel.
    */
   private async autoEncryptFile(file: TFile): Promise<void> {
     // Verify the file still exists and is still .md (might have been encrypted already)
@@ -393,31 +396,42 @@ export class WholeNoteFeature implements IAFEFeature {
     if (!password) return;
     const hint = "";
 
-    // Read, encrypt, modify in-place, then rename
     const plaintext = await this.plugin.app.vault.read(current);
     const encryptedJson = await encode(plaintext, password, hint);
     const oldPath = current.path;
     const newPath = current.path.replace(/\.md$/, `.${LOCKED_EXTENSION}`);
 
-    // Hide views so encrypted JSON doesn't flash in the editor
+    // Find editor leaves (MarkdownView only, not sidebar panels)
+    const leaves: WorkspaceLeaf[] = [];
     this.plugin.app.workspace.iterateAllLeaves((leaf) => {
-      if ((leaf.view as any).file?.path === current.path) {
-        (leaf.view as any).contentEl.style.visibility = "hidden";
+      if (
+        leaf.view instanceof MarkdownView &&
+        (leaf.view as any).file?.path === current.path
+      ) {
+        leaves.push(leaf);
       }
     });
+
+    // Navigate leaves to blank state to detach local graph
+    for (const leaf of leaves) {
+      await leaf.setViewState({ type: "empty", state: {} });
+    }
+
+    // Let sidebar panels settle
+    if (leaves.length > 0) {
+      await new Promise(resolve => setTimeout(resolve, 300));
+    }
 
     // Cache password BEFORE rename so EncryptedMarkdownView can auto-decrypt
     this.plugin.sessionManager.put(newPath, password, hint);
 
+    // Encrypt on disk while no view displays the file
     await this.plugin.app.vault.modify(current, encryptedJson);
     await this.plugin.app.fileManager.renameFile(current, newPath);
 
-    // Force view transition — daily notes are new, so EncryptedMarkdownView
-    // needs to load to auto-decrypt. The password is already cached above.
-    for (const leaf of this.plugin.app.workspace.getLeavesOfType("markdown")) {
-      if ((leaf.view as any).file?.path === current.path) {
-        await leaf.openFile(current);
-      }
+    // Open the encrypted file — EncryptedMarkdownView loads and auto-decrypts
+    for (const leaf of leaves) {
+      await leaf.openFile(current);
     }
 
     await this.converter.updateManualSortOrder(oldPath, newPath);
