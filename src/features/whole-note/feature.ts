@@ -393,46 +393,36 @@ export class WholeNoteFeature implements IAFEFeature {
     if (!password) return;
     const hint = "";
 
-    // Find the leaf that has this file open and remember its mode
-    let targetLeaf: WorkspaceLeaf | null = null;
-    let viewMode = "source";
-    const otherLeaves: WorkspaceLeaf[] = [];
+    // Read, encrypt, modify in-place, then rename
+    const plaintext = await this.plugin.app.vault.read(current);
+    const encryptedJson = await encode(plaintext, password, hint);
+    const oldPath = current.path;
+    const newPath = current.path.replace(/\.md$/, `.${LOCKED_EXTENSION}`);
 
+    // Hide views so encrypted JSON doesn't flash in the editor
     this.plugin.app.workspace.iterateAllLeaves((leaf) => {
-      if ((leaf.view as any).file?.path === file.path) {
-        if (!targetLeaf) {
-          targetLeaf = leaf;
-          const state = leaf.getViewState();
-          viewMode = (state?.state as any)?.mode ?? "source";
-        } else {
-          otherLeaves.push(leaf);
-        }
+      if ((leaf.view as any).file?.path === current.path) {
+        (leaf.view as any).contentEl.style.visibility = "hidden";
       }
     });
 
-    for (const leaf of otherLeaves) {
-      leaf.detach();
-    }
-
-    // Read, encrypt, create .locked
-    const plaintext = await this.plugin.app.vault.read(current);
-    const encryptedJson = await encode(plaintext, password, hint);
-    const newPath = file.path.replace(/\.md$/, `.${LOCKED_EXTENSION}`);
-    const newFile = await this.plugin.app.vault.create(newPath, encryptedJson);
-
+    // Cache password BEFORE rename so EncryptedMarkdownView can auto-decrypt
     this.plugin.sessionManager.put(newPath, password, hint);
 
-    // Preserve position in manual-sorting plugin
-    await this.converter.updateManualSortOrder(file.path, newPath);
+    await this.plugin.app.vault.modify(current, encryptedJson);
+    await this.plugin.app.fileManager.renameFile(current, newPath);
 
-    // Reopen in same leaf BEFORE deleting — vault.delete closes tabs
-    const leaf = targetLeaf ?? this.plugin.app.workspace.getLeaf(false);
-    await leaf.openFile(newFile, { state: { mode: viewMode } });
+    // Force view transition — daily notes are new, so EncryptedMarkdownView
+    // needs to load to auto-decrypt. The password is already cached above.
+    for (const leaf of this.plugin.app.workspace.getLeavesOfType("markdown")) {
+      if ((leaf.view as any).file?.path === current.path) {
+        await leaf.openFile(current);
+      }
+    }
 
-    // Delete original
-    await this.plugin.app.vault.delete(current);
+    await this.converter.updateManualSortOrder(oldPath, newPath);
 
-    new Notice(`Daily note encrypted: ${newFile.basename}`);
+    new Notice(`Daily note encrypted: ${current.basename}`);
   }
 
   /**

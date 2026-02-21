@@ -1,13 +1,17 @@
 /**
  * Note converter — convert between .md and .locked files.
  *
- * If the file being converted is currently open:
- *   - Active tab: reopen the converted file in the same tab, same mode
- *   - Background tab: silently swap without stealing focus
- * If the file is not open: just convert on disk, don't open anything.
+ * Uses vault.modify() + fileManager.renameFile() to keep the TFile alive.
+ * No file is created or deleted — only modified and renamed.
+ *
+ * To protect the local graph panel during encryption, the active leaf is
+ * navigated to an empty state BEFORE the file is modified. This detaches
+ * the graph from the file so it isn't affected by the content/type change.
+ * After the rename, the encrypted file is opened in the same leaf and the
+ * graph reattaches naturally.
  */
 
-import { TFile, Notice, WorkspaceLeaf } from "obsidian";
+import { TFile, Notice, WorkspaceLeaf, MarkdownView } from "obsidian";
 import type AFEPlugin from "../../main";
 import { encode, decode, LOCKED_EXTENSION, createPendingFile } from "../../services/file-data";
 
@@ -35,52 +39,51 @@ export class NoteConverter {
       return;
     }
 
-    // Try session password first
     let password = this.plugin.sessionManager.getPassword(file.path);
     let hint = "";
 
     this.isConverting = true;
     try {
-      // Find open leaves and remember state before making changes
-      const { targetLeaf, viewMode, wasActive, otherLeaves } = this.findLeaves(file);
-
-      // Close duplicate leaves (keep the primary one)
-      for (const leaf of otherLeaves) {
-        leaf.detach();
-      }
-
-      // Read plaintext before doing anything destructive
+      // Read plaintext before modifying
       const plaintext = await this.plugin.app.vault.read(file);
-
-      // Compute new path
+      const oldPath = file.path;
       const newPath = file.path.replace(/\.md$/, `.${LOCKED_EXTENSION}`);
 
-      let newFile: TFile;
+      // Collect all leaves showing this file, then navigate them to a
+      // blank "empty" state. This detaches the local graph from the file
+      // so it isn't affected by the content change or view transition.
+      const leaves = this.findLeavesForFile(file);
+      for (const leaf of leaves) {
+        await leaf.setViewState({ type: "empty", state: {} });
+      }
 
+      // Let sidebar panels (local graph, backlinks, etc.) settle
+      if (leaves.length > 0) {
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+
+      // Now encrypt on disk — no view is displaying the file
       if (password) {
-        // Session password available — encrypt immediately
         const encryptedJson = await encode(plaintext, password, hint);
-        newFile = await this.plugin.app.vault.create(newPath, encryptedJson);
+        await this.plugin.app.vault.modify(file, encryptedJson);
         this.plugin.sessionManager.put(newPath, password, hint);
       } else {
-        // No session password — create a pending file and cache the plaintext
-        // so the view's inline encrypt card can use it after password entry.
         const pendingContent = createPendingFile();
-        newFile = await this.plugin.app.vault.create(newPath, pendingContent);
+        await this.plugin.app.vault.modify(file, pendingContent);
         this.plugin.pendingPlaintext.set(newPath, plaintext);
       }
 
-      // Preserve position in manual-sorting plugin
-      await this.updateManualSortOrder(file.path, newPath);
+      // Rename .md → .locked
+      await this.plugin.app.fileManager.renameFile(file, newPath);
 
-      // Reopen in same tab BEFORE deleting the old file — vault.delete
-      // causes Obsidian to close any tabs showing the deleted file.
-      if (targetLeaf) {
-        await this.reopenInLeaf(targetLeaf, newFile, viewMode, wasActive);
+      // Open the encrypted file in the same leaves.
+      // EncryptedMarkdownView loads and auto-decrypts (password is cached).
+      for (const leaf of leaves) {
+        await leaf.openFile(file);
       }
 
-      // Delete original .md file
-      await this.plugin.app.vault.delete(file);
+      // Preserve position in manual-sorting plugin
+      await this.updateManualSortOrder(oldPath, newPath);
 
       if (password) {
         new Notice(`Encrypted: ${file.basename}.${LOCKED_EXTENSION}`);
@@ -99,7 +102,6 @@ export class NoteConverter {
       return;
     }
 
-    // Require session password — user must unlock the note first
     const password = this.plugin.sessionManager.getPassword(file.path);
 
     if (!password) {
@@ -109,13 +111,6 @@ export class NoteConverter {
 
     this.isConverting = true;
     try {
-      // Find open leaves and remember state before making changes
-      const { targetLeaf, viewMode, wasActive, otherLeaves } = this.findLeaves(file);
-
-      for (const leaf of otherLeaves) {
-        leaf.detach();
-      }
-
       // Read and decrypt
       const raw = await this.plugin.app.vault.read(file);
       const plaintext = await decode(raw, password);
@@ -125,27 +120,31 @@ export class NoteConverter {
         return;
       }
 
-      // Compute new path
+      const oldPath = file.path;
       const newPath = file.path.replace(new RegExp(`\\.${LOCKED_EXTENSION}$`), ".md");
 
-      // Create decrypted file
-      const newFile = await this.plugin.app.vault.create(newPath, plaintext);
-
-      // Don't clear the session password here — it should persist so the
-      // user can re-encrypt without being prompted again. The session is
-      // only cleared via "Lock all" or "Clear session cache".
-
-      // Preserve position in manual-sorting plugin
-      await this.updateManualSortOrder(file.path, newPath);
-
-      // Reopen in same tab BEFORE deleting the old file — vault.delete
-      // causes Obsidian to close any tabs showing the deleted file.
-      if (targetLeaf) {
-        await this.reopenInLeaf(targetLeaf, newFile, viewMode, wasActive);
+      // Same blank-tab approach: navigate away, convert, reopen
+      const leaves = this.findLeavesForFile(file);
+      for (const leaf of leaves) {
+        await leaf.setViewState({ type: "empty", state: {} });
+      }
+      if (leaves.length > 0) {
+        await new Promise(resolve => setTimeout(resolve, 300));
       }
 
-      // Delete encrypted file
-      await this.plugin.app.vault.delete(file);
+      // Overwrite the .locked file with plaintext
+      await this.plugin.app.vault.modify(file, plaintext);
+
+      // Rename .locked → .md
+      await this.plugin.app.fileManager.renameFile(file, newPath);
+
+      // Open the decrypted .md file
+      for (const leaf of leaves) {
+        await leaf.openFile(file);
+      }
+
+      // Preserve position in manual-sorting plugin
+      await this.updateManualSortOrder(oldPath, newPath);
 
       new Notice(`Decrypted: ${file.basename}.md`);
     } finally {
@@ -153,14 +152,29 @@ export class NoteConverter {
     }
   }
 
+  /** Find editor leaves (MarkdownView) showing a file — excludes sidebar panels. */
+  private findLeavesForFile(file: TFile): WorkspaceLeaf[] {
+    const result: WorkspaceLeaf[] = [];
+    this.plugin.app.workspace.iterateAllLeaves((leaf) => {
+      if (
+        leaf.view instanceof MarkdownView &&
+        (leaf.view as any).file?.path === file.path
+      ) {
+        result.push(leaf);
+      }
+    });
+    return result;
+  }
+
   /**
    * Replace oldPath with newPath in the manual-sorting plugin's sort order
    * so the converted file keeps its position in the file explorer.
    *
-   * Must run AFTER vault.create (which triggers manual-sorting's own create
-   * handler that inserts newPath at top/bottom). We undo that insertion,
-   * then swap oldPath → newPath in-place. The subsequent vault.delete won't
-   * find oldPath anymore, so it's a no-op on the sort order.
+   * Safe to call after either create+delete or rename workflows:
+   * - If manual-sorting already handled the rename: oldPath won't be found,
+   *   no changes are made.
+   * - If manual-sorting didn't handle the rename: oldPath is replaced
+   *   with newPath in-place.
    */
   async updateManualSortOrder(oldPath: string, newPath: string): Promise<void> {
     if (!this.plugin.settings.manualSortIntegration) return;
@@ -177,11 +191,15 @@ export class NoteConverter {
     const folderOrder = data.customOrder[folderKey];
     if (!folderOrder?.children) return;
 
-    // The manual-sorting plugin's create handler already inserted newPath
-    // at the top or bottom. Remove that duplicate before we do the swap.
+    // Remove any duplicate entry for newPath (e.g. if a create handler
+    // inserted it, or if manual-sorting's rename handler duplicated it)
     const dupeIndex = folderOrder.children.indexOf(newPath);
     if (dupeIndex !== -1) {
-      folderOrder.children.splice(dupeIndex, 1);
+      // Only remove if oldPath also exists (true duplicate scenario)
+      const oldIndex = folderOrder.children.indexOf(oldPath);
+      if (oldIndex !== -1) {
+        folderOrder.children.splice(dupeIndex, 1);
+      }
     }
 
     // Replace oldPath with newPath at its original position
@@ -191,61 +209,5 @@ export class NoteConverter {
     }
 
     await manualSorting.saveData(data);
-  }
-
-  /**
-   * Find all leaves that have a file open.
-   * Returns the primary leaf, its view mode, whether it was the active tab,
-   * and any duplicate leaves.
-   */
-  private findLeaves(file: TFile): {
-    targetLeaf: WorkspaceLeaf | null;
-    viewMode: string;
-    wasActive: boolean;
-    otherLeaves: WorkspaceLeaf[];
-  } {
-    const activeLeaf = this.plugin.app.workspace.activeLeaf;
-    let targetLeaf: WorkspaceLeaf | null = null;
-    let viewMode = "source";
-    const otherLeaves: WorkspaceLeaf[] = [];
-
-    this.plugin.app.workspace.iterateAllLeaves((leaf) => {
-      if ((leaf.view as any).file?.path === file.path) {
-        if (!targetLeaf) {
-          targetLeaf = leaf;
-          const state = leaf.getViewState();
-          viewMode = (state?.state as any)?.mode ?? "source";
-        } else {
-          otherLeaves.push(leaf);
-        }
-      }
-    });
-
-    return {
-      targetLeaf,
-      viewMode,
-      wasActive: targetLeaf === activeLeaf,
-      otherLeaves,
-    };
-  }
-
-  /**
-   * Open a file in a specific leaf, preserving view mode.
-   * If the leaf was a background tab, restore focus to the previously active leaf.
-   */
-  private async reopenInLeaf(
-    leaf: WorkspaceLeaf,
-    file: TFile,
-    viewMode: string,
-    wasActive: boolean
-  ): Promise<void> {
-    const activeLeaf = this.plugin.app.workspace.activeLeaf;
-
-    await leaf.openFile(file, { state: { mode: viewMode } });
-
-    // If this was a background tab, restore focus so we don't steal it
-    if (!wasActive && activeLeaf) {
-      this.plugin.app.workspace.setActiveLeaf(activeLeaf, { focus: true });
-    }
   }
 }
