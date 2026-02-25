@@ -56,6 +56,16 @@ export default class AFEPlugin extends Plugin {
     // Register .locked as a known extension
     this.registerExtensions([LOCKED_EXTENSION], VIEW_TYPE_ENCRYPTED);
 
+    // Hide .locked suffix in rendered link display text (reading + live preview)
+    this.registerMarkdownPostProcessor((el) => {
+      for (const a of el.querySelectorAll<HTMLAnchorElement>("a.internal-link")) {
+        const href = a.dataset.href ?? "";
+        if (href.endsWith(".locked") && (a.textContent ?? "").endsWith(".locked")) {
+          a.textContent = a.textContent!.slice(0, -".locked".length);
+        }
+      }
+    });
+
     // Handle file renames — keep session manager in sync
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
