@@ -26,7 +26,7 @@ import { parse, encode, decode, isEncryptedFile, isPendingFile, needsMigration }
 import type { AFEFileData } from "../services/file-data";
 import { deriveKeyFromData, decryptTextWithKey } from "../crypto/index";
 
-export const VIEW_TYPE_ENCRYPTED = "advanced-file-encryption-encrypted-view";
+export const VIEW_TYPE_ENCRYPTED = "advanced-file-encrypter-encrypted-view";
 
 export class EncryptedMarkdownView extends MarkdownView {
   plugin: AFEPlugin;
